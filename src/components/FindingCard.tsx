@@ -13,7 +13,9 @@ import {
   AlertTriangle,
   Lightbulb,
   FileCode,
-  Smartphone
+  Smartphone,
+  Lock,
+  ArrowRight
 } from 'lucide-react';
 
 export interface FindingProps {
@@ -31,6 +33,8 @@ interface FindingCardProps {
   detectedTech?: string[];
   targetUrl?: string;
   defaultExpanded?: boolean;
+  canUseAiFixDoctor?: boolean;
+  onRequestUpgrade?: () => void;
 }
 
 function getPlayComplianceTag(finding: FindingProps): string | null {
@@ -53,6 +57,33 @@ function getPlayComplianceTag(finding: FindingProps): string | null {
     return 'OWASP API Top 10';
   }
   return null;
+}
+
+function getConfidenceTag(finding: FindingProps): {
+  label: 'Confirmed' | 'Heuristic • Verify Context';
+  style: string;
+  tooltip: string;
+} {
+  const txt = `${finding.category || ''} ${finding.type || ''} ${finding.proof || ''}`;
+  const isHeuristic =
+    /verify referrer|heuristic|potential|dom xss sink|postmessage|pattern|hardcoded|obfuscation/i.test(txt) &&
+    !/live.*200|verified via|expired|self-signed|returned http|missing .*header|cors|tls|spf|dmarc|apk|manifest|elf|signing/i.test(txt);
+
+  if (isHeuristic) {
+    return {
+      label: 'Heuristic • Verify Context',
+      style: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+      tooltip:
+        'Static pattern match: verify upstream sanitizers, origin checks, or API/referrer restrictions manually.'
+    };
+  }
+
+  return {
+    label: 'Confirmed',
+    style: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+    tooltip:
+      'Deterministically verified from live HTTP/TLS/DNS telemetry, read-only API probe, or manifest/bytecode metadata.'
+  };
 }
 
 // Built-in framework specific fixes for instant copy-pasting (Web + Mobile APK)
@@ -537,7 +568,9 @@ export const FindingCard: React.FC<FindingCardProps> = ({
   finding, 
   detectedTech = [], 
   targetUrl = '',
-  defaultExpanded = false
+  defaultExpanded = false,
+  canUseAiFixDoctor = true,
+  onRequestUpgrade
 }) => {
   const isPass = finding.severity === 'PASS' || finding.severity === 'INFO';
   const [expanded, setExpanded] = useState(defaultExpanded || (!isPass && finding.severity === 'CRITICAL'));
@@ -676,6 +709,17 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                   </span>
                 ) : null;
               })()}
+              {!isPass && (() => {
+                const conf = getConfidenceTag(finding);
+                return (
+                  <span
+                    title={conf.tooltip}
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${conf.style}`}
+                  >
+                    {conf.label}
+                  </span>
+                );
+              })()}
               <span className="text-[11px] font-bold text-slate-400">
                 {finding.category}
               </span>
@@ -728,7 +772,31 @@ export const FindingCard: React.FC<FindingCardProps> = ({
           )}
 
           {/* 3. STEP-BY-STEP FIX & CODE (If Vulnerability) */}
-          {!isPass && (
+          {!isPass && !canUseAiFixDoctor && (
+            <div className="p-4 rounded-2xl bg-[#0d1017] border border-amber-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <div className="text-xs font-black text-amber-300 flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>AI Code Fix Doctor &amp; Copy-Paste Code Patches</span>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  {finding.remediation} Upgrade to <strong className="text-white">Pro Security ($15/mo)</strong> for full step-by-step code patches &amp; Gemini 3.8 Flash remediation.
+                </p>
+              </div>
+              {onRequestUpgrade && (
+                <button
+                  type="button"
+                  onClick={onRequestUpgrade}
+                  className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-400 to-emerald-400 hover:brightness-110 text-slate-950 font-black text-[11px] inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
+                >
+                  <span>Unlock Fix Code</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {!isPass && canUseAiFixDoctor && (
             <div className="space-y-3 bg-[#0d1017] p-4 rounded-2xl border border-cyan-500/20">
               
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">

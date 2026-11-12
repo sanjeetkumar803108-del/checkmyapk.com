@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { AUDIT_HTTPS_AGENT } from './securityGuard.ts';
 
 export interface WebDeepFinding {
   category: string;
@@ -57,6 +58,34 @@ const USER_AGENT = 'CheckMyAPK-Auditor/1.0 (+https://checkmyapk.com)';
 
 const TAINT_INPUT_HINT =
   /(?:location\.(?:search|hash|href)|window\.location|URLSearchParams|window\.name|document\.(?:referrer|URL)|decodeURIComponent|event\.data)/i;
+
+const EXPLICIT_POSTMESSAGE_SINK =
+  /(?:\.(?:innerHTML|outerHTML)\s*[+]?=|(?:document\.write(?:ln)?|insertAdjacentHTML)\s*\(|\beval\s*\(|\bnew\s+Function\s*\()/i;
+
+function isTaintedNearSink(
+  text: string,
+  idx: number,
+  fullMatch: string,
+  isMinifiedVendor: boolean
+): boolean {
+  if (TAINT_INPUT_HINT.test(fullMatch)) return true;
+  if (!isMinifiedVendor) {
+    const ctxWindow = text.slice(Math.max(0, idx - 160), Math.min(text.length, idx + 220));
+    return TAINT_INPUT_HINT.test(ctxWindow);
+  }
+
+  // On minified/bundled scripts, constrain the search to the current function/expression slice
+  // so adjacent unrelated functions within 220 chars do not cause false INPUT TAINT positives.
+  const rawBefore = text.slice(Math.max(0, idx - 90), idx);
+  const lastFnBoundary = Math.max(
+    rawBefore.lastIndexOf('function'),
+    rawBefore.lastIndexOf('=>{'),
+    rawBefore.lastIndexOf('=> {')
+  );
+  const tightBefore = lastFnBoundary >= 0 ? rawBefore.slice(lastFnBoundary) : rawBefore;
+  const tightAfter = text.slice(idx, Math.min(text.length, idx + fullMatch.length + 50)).split(/function\b/)[0];
+  return TAINT_INPUT_HINT.test(`${tightBefore}${tightAfter}`);
+}
 
 const SENSITIVE_JWT_CLAIM_RE =
   /^(?:password|passwd|pwd|secret|client_secret|api_?key|private_?key|access_?secret|ssn|aadhaar|pan_?card|credit_?card|card_?number|cvv|pin)$/i;
@@ -411,8 +440,7 @@ export function scanDomXssSinks(
         if (rule.isSafe && rule.isSafe(fullMatch, argText)) continue;
 
         const idx = m.index ?? 0;
-        const ctxWindow = text.slice(Math.max(0, idx - 220), Math.min(text.length, idx + 260));
-        const taintedByInput = TAINT_INPUT_HINT.test(ctxWindow);
+        const taintedByInput = isTaintedNearSink(text, idx, fullMatch, isMinifiedVendor);
 
         // Suppress minified/vendor/Trusted-Types untainted .innerHTML=b / eval(b) false positives
         if (
@@ -421,6 +449,15 @@ export function scanDomXssSinks(
           (rule.label === 'innerHTML / document.write' ||
             rule.label === 'eval / new Function' ||
             rule.label === 'dangerouslySetInnerHTML')
+        ) {
+          continue;
+        }
+
+        // Suppress minified/vendor postMessage false positives when the handler merely delegates (no explicit DOM/eval sink)
+        if (
+          isMinifiedVendor &&
+          rule.label === 'postMessage Missing Origin Check' &&
+          !EXPLICIT_POSTMESSAGE_SINK.test(fullMatch)
         ) {
           continue;
         }
@@ -628,6 +665,7 @@ export async function runWebDeepAudit(params: {
     axios
       .get(`${targetOrigin}/robots.txt`, {
         timeout: 3200,
+        httpsAgent: AUDIT_HTTPS_AGENT,
         maxContentLength: 256 * 1024,
         maxRedirects: 2,
         validateStatus: () => true,
@@ -639,6 +677,7 @@ export async function runWebDeepAudit(params: {
       try {
         const res = await axios.get(specUrl, {
           timeout: 3500,
+          httpsAgent: AUDIT_HTTPS_AGENT,
           maxContentLength: 1024 * 1024,
           maxRedirects: 0,
           validateStatus: () => true,
@@ -657,6 +696,7 @@ export async function runWebDeepAudit(params: {
           { query: '{ __schema { queryType { name } types { name kind } } }' },
           {
             timeout: 3500,
+            httpsAgent: AUDIT_HTTPS_AGENT,
             maxContentLength: 512 * 1024,
             maxRedirects: 0,
             validateStatus: () => true,
@@ -696,6 +736,7 @@ export async function runWebDeepAudit(params: {
     try {
       const smRes = await axios.get(firstSitemap, {
         timeout: 3200,
+        httpsAgent: AUDIT_HTTPS_AGENT,
         maxContentLength: 512 * 1024,
         maxRedirects: 1,
         validateStatus: () => true,
@@ -787,6 +828,7 @@ export async function runWebDeepAudit(params: {
     try {
       const authPageRes = await axios.get(targetUrl, {
         timeout: 4000,
+        httpsAgent: AUDIT_HTTPS_AGENT,
         maxRedirects: 0,
         validateStatus: () => true,
         headers: {
@@ -839,6 +881,7 @@ export async function runWebDeepAudit(params: {
       try {
         const unauthRes = await axios.get(fullApiUrl, {
           timeout: 3200,
+          httpsAgent: AUDIT_HTTPS_AGENT,
           maxContentLength: 256 * 1024,
           maxRedirects: 0,
           validateStatus: () => true,
@@ -849,6 +892,7 @@ export async function runWebDeepAudit(params: {
         if (hasAuth) {
           const authRes = await axios.get(fullApiUrl, {
             timeout: 3200,
+            httpsAgent: AUDIT_HTTPS_AGENT,
             maxContentLength: 256 * 1024,
             maxRedirects: 0,
             validateStatus: () => true,

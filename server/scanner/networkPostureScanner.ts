@@ -2,6 +2,7 @@ import axios from 'axios';
 import dns from 'dns';
 import net from 'net';
 import tls from 'tls';
+import { AUDIT_HTTPS_AGENT } from './securityGuard.ts';
 
 export interface PostureFinding {
   category: string;
@@ -89,6 +90,7 @@ export async function probeDynamicCorsReflection(targetUrl: string): Promise<{
     const resp = await axios.get(targetUrl, {
       timeout: 3500,
       maxRedirects: 2,
+      httpsAgent: AUDIT_HTTPS_AGENT,
       validateStatus: () => true,
       headers: {
         Origin: probeOrigin,
@@ -208,25 +210,28 @@ export async function inspectTlsCertificate(parsedUrl: URL): Promise<{
             });
           }
 
-          if (!authorized && authErr) {
-            findings.push({
-              category: 'Transport Encryption (TLS)',
-              type: 'Untrusted or Self-Signed SSL/TLS Certificate',
-              severity: 'MEDIUM',
-              owaspRef: 'OWASP-A02',
-              proof: `TLS peer certificate validation failed (${authErr}) for ${parsedUrl.hostname}.`,
-              description: 'Browsers and mobile apps will reject or warn on self-signed/mismatched certificates, exposing users to MitM risk.',
-              remediation: 'Install a valid CA-signed certificate (Let\'s Encrypt / Cloudflare / ACM) matching your hostname.'
-            });
-          } else if (daysRemaining !== null && daysRemaining <= 0) {
+          const isExpiredCert =
+            (daysRemaining !== null && daysRemaining <= 0) || /CERT_HAS_EXPIRED|CERT_NOT_YET_VALID/i.test(authErr);
+
+          if (isExpiredCert) {
             findings.push({
               category: 'Transport Encryption (TLS)',
               type: 'Expired SSL/TLS Certificate',
               severity: 'CRITICAL',
               owaspRef: 'OWASP-A02',
-              proof: `Certificate expired ${Math.abs(daysRemaining)} day(s) ago (valid_to: ${cert.valid_to}, issuer: ${issuer}).`,
+              proof: `Certificate expired ${daysRemaining !== null ? `${Math.abs(daysRemaining)} day(s) ago ` : ''}(${authErr || 'expired'}, valid_to: ${cert.valid_to || 'unknown'}, issuer: ${issuer || 'Unknown'}).`,
               description: 'An expired TLS certificate breaks HTTPS trust in every browser and API client.',
               remediation: 'Renew the TLS certificate immediately and enable automated ACME/Certbot renewal.'
+            });
+          } else if (!authorized && authErr) {
+            findings.push({
+              category: 'Transport Encryption (TLS)',
+              type: 'Untrusted or Self-Signed SSL/TLS Certificate',
+              severity: 'HIGH',
+              owaspRef: 'OWASP-A02',
+              proof: `TLS peer certificate validation failed (${authErr}) for ${parsedUrl.hostname}.`,
+              description: 'Browsers and mobile apps will reject or warn on self-signed/mismatched certificates, exposing users to MitM risk.',
+              remediation: 'Install a valid CA-signed certificate (Let\'s Encrypt / Cloudflare / ACM) matching your hostname.'
             });
           } else if (daysRemaining !== null && daysRemaining < 15) {
             findings.push({
@@ -355,6 +360,7 @@ export async function checkSecurityTxtPolicy(origin: string): Promise<{
     const res = await axios.get(`${origin}/.well-known/security.txt`, {
       timeout: 2200,
       maxContentLength: 32 * 1024,
+      httpsAgent: AUDIT_HTTPS_AGENT,
       validateStatus: () => true,
       headers: { 'User-Agent': 'CheckMyAPK-Auditor/1.0' }
     });

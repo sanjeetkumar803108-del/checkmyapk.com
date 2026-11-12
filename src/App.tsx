@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Shield,
   Search,
@@ -30,12 +30,27 @@ import {
   Info,
   X,
   TrendingUp,
-  CheckCircle2
+  CheckCircle2,
+  ChevronDown,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { CyberBackground } from './components/CyberBackground';
 import { ScoreGauge } from './components/ScoreGauge';
 import { FindingCard } from './components/FindingCard';
 import { LiveTerminalLogs } from './components/LiveTerminalLogs';
+import { AuthModal } from './components/AuthModal';
+import { AccountPage } from './components/AccountPage';
+import { HomepageSections } from './components/HomepageSections';
+import { PricingPage } from './components/PricingPage';
+import {
+  LEGAL_DOCS_BY_ID,
+  LEGAL_DOC_PATHS,
+  resolveLegalDocFromUrl,
+  type LegalDocId,
+} from './data/legalDocs';
+import type { AccountPlan, UserAccount } from './types/account';
+import { getPlanPolicy } from './data/planPolicy';
 
 interface ExportedComp {
   componentType: 'activity' | 'service' | 'receiver' | 'provider';
@@ -220,6 +235,7 @@ export default function App() {
   const [apkFile, setApkFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
 
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<SecurityReport | null>(null);
@@ -227,7 +243,11 @@ export default function App() {
   const [filter, setFilter] = useState<'all' | 'vulns' | 'pass'>('all');
   const [activeStepMessage, setActiveStepMessage] = useState('Initiating automated security probe...');
   const [showLogsModal, setShowLogsModal] = useState(false);
-  const [showTrustModal, setShowTrustModal] = useState<'privacy' | 'methodology' | null>(null);
+  const [showTrustModal, setShowTrustModal] = useState<LegalDocId | 'methodology' | null>(() =>
+    typeof window !== 'undefined'
+      ? resolveLegalDocFromUrl(window.location.pathname, window.location.search)
+      : null
+  );
   const [hashCopied, setHashCopied] = useState(false);
   const [scoreDelta, setScoreDelta] = useState<{
     previousScore: number;
@@ -244,9 +264,275 @@ export default function App() {
   const [masterTab, setMasterTab] = useState<'vercel' | 'nextjs' | 'express'>('vercel');
   const [masterCopied, setMasterCopied] = useState(false);
   const [mdCopied, setMdCopied] = useState(false);
+  const [revealedBentoCards, setRevealedBentoCards] = useState<boolean[]>([false, false, false, false]);
+  const bentoCardRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [authModalMode, setAuthModalMode] = useState<'login' | 'register' | null>(null);
+  const [showAccountPage, setShowAccountPage] = useState(false);
+  const isPricingLocation = (pathname: string, search: string) =>
+    pathname.replace(/\/+$/, '') === '/pricing' ||
+    new URLSearchParams(search).get('page') === 'pricing';
+  const [showPricingPage, setShowPricingPage] = useState<boolean>(() =>
+    typeof window !== 'undefined'
+      ? isPricingLocation(window.location.pathname, window.location.search)
+      : false
+  );
+  const activePlan: AccountPlan = currentUser?.plan || 'free';
+  const activePlanPolicy = getPlanPolicy(activePlan);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() =>
+    typeof window !== 'undefined' && localStorage.getItem('checkmyapk_theme') === 'light'
+      ? 'light'
+      : 'dark'
+  );
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.classList.toggle('light', theme === 'light');
+    root.classList.toggle('dark', theme === 'dark');
+    root.style.colorScheme = theme;
+    try {
+      localStorage.setItem('checkmyapk_theme', theme);
+    } catch {}
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+
+  const openPricingPage = () => {
+    setShowAccountPage(false);
+    setShowPricingPage(true);
+    setError(null);
+    if (typeof window !== 'undefined') {
+      if (!isPricingLocation(window.location.pathname, window.location.search)) {
+        window.history.pushState({ page: 'pricing' }, '', '/pricing');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const closePricingPage = (syncUrl = true) => {
+    setShowPricingPage(false);
+    if (syncUrl && typeof window !== 'undefined') {
+      if (isPricingLocation(window.location.pathname, window.location.search)) {
+        const params = new URLSearchParams(window.location.search);
+        params.delete('page');
+        const nextQuery = params.toString();
+        const nextPath = window.location.pathname.replace(/\/+$/, '') === '/pricing' ? '/' : window.location.pathname;
+        const nextUrl = `${nextPath}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash}`;
+        window.history.pushState({}, '', nextUrl);
+      }
+    }
+  };
+
+  const openAccountPage = () => {
+    setShowPricingPage(false);
+    setShowAccountPage(true);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('page') !== 'account') {
+        params.set('page', 'account');
+        window.history.pushState({ page: 'account' }, '', `?${params.toString()}`);
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const closeAccountPage = (syncUrl = true) => {
+    setShowAccountPage(false);
+    if (syncUrl && typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('page') === 'account') {
+        params.delete('page');
+        const nextQuery = params.toString();
+        const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash}`;
+        window.history.pushState({}, '', nextUrl);
+      }
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/me', { credentials: 'same-origin' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active) return;
+        const wantsAccountPage =
+          typeof window !== 'undefined' &&
+          new URLSearchParams(window.location.search).get('page') === 'account';
+        if (data?.user) {
+          setCurrentUser(data.user);
+          if (wantsAccountPage) setShowAccountPage(true);
+        } else if (wantsAccountPage) {
+          closeAccountPage(true);
+        }
+      })
+      .catch(() => {});
+
+    const handlePopState = () => {
+      if (typeof window === 'undefined') return;
+      const isAccount = new URLSearchParams(window.location.search).get('page') === 'account';
+      setShowAccountPage(isAccount);
+      setShowPricingPage(isPricingLocation(window.location.pathname, window.location.search));
+      setShowTrustModal(resolveLegalDocFromUrl(window.location.pathname, window.location.search));
+    };
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      active = false;
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  const openTrustModal = (target: LegalDocId | 'methodology') => {
+    setShowTrustModal(target);
+    if (typeof window !== 'undefined' && target !== 'methodology') {
+      const targetPath = LEGAL_DOC_PATHS[target];
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState({ legal: target }, '', targetPath);
+      }
+    }
+  };
+
+  const closeTrustModal = () => {
+    setShowTrustModal(null);
+    if (typeof window !== 'undefined') {
+      const resolved = resolveLegalDocFromUrl(window.location.pathname, window.location.search);
+      if (resolved) {
+        const params = new URLSearchParams(window.location.search);
+        params.delete('legal');
+        const nextQuery = params.toString();
+        const nextUrl = `/${nextQuery ? `?${nextQuery}` : ''}${window.location.hash}`;
+        window.history.pushState({}, '', nextUrl);
+      }
+    }
+  };
+
+  const persistScanToAccount = async (
+    target: string,
+    mode: 'apk' | 'web',
+    data: { score?: number; grade?: string; summaryCounts?: { critical?: number } }
+  ) => {
+    if (!currentUser) return;
+    try {
+      const res = await fetch('/api/auth/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          target,
+          mode,
+          score: data?.score ?? 0,
+          grade: data?.grade ?? 'B',
+          criticalCount: data?.summaryCounts?.critical ?? 0,
+        }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.user) setCurrentUser(json.user);
+      }
+    } catch {
+      // Non-blocking history sync
+    }
+  };
+
+  const navigateSection = (sectionId: string, preferredMode?: 'apk' | 'web') => {
+    setShowAccountPage(false);
+    setShowPricingPage(false);
+    if (typeof window !== 'undefined') {
+      const hasAccountParam = new URLSearchParams(window.location.search).get('page') === 'account';
+      if (hasAccountParam || isPricingLocation(window.location.pathname, window.location.search)) {
+        window.history.pushState({}, '', '/');
+      }
+    }
+    if (preferredMode) {
+      setScanMode(preferredMode);
+      setError(null);
+    }
+    if (report || loading) {
+      setReport(null);
+      setLoading(false);
+    }
+    setTimeout(() => {
+      const targetEl = document.getElementById(sectionId);
+      targetEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  };
+
+  const handleSelectPlan = async (plan: AccountPlan) => {
+    if (!currentUser) {
+      setAuthModalMode('register');
+      return;
+    }
+    try {
+      const res = await fetch('/api/auth/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ plan }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.user) setCurrentUser(data.user);
+        openAccountPage();
+      }
+    } catch {}
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch {}
+    setCurrentUser(null);
+    closeAccountPage(true);
+  };
+
+  useEffect(() => {
+    if (showAccountPage || report || loading) return;
+
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (prefersReduced || typeof IntersectionObserver === 'undefined') {
+      setRevealedBentoCards([true, true, true, true]);
+      return;
+    }
+
+    setRevealedBentoCards([false, false, false, false]);
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const idxAttr = entry.target.getAttribute('data-bento-index');
+          const idx = idxAttr ? Number(idxAttr) : -1;
+          if (idx >= 0 && idx < 4) {
+            setRevealedBentoCards((prev) => {
+              if (prev[idx]) return prev;
+              const next = [...prev];
+              next[idx] = true;
+              return next;
+            });
+          }
+          observer.unobserve(entry.target);
+        });
+      },
+      { threshold: 0.16, rootMargin: '0px 0px -36px 0px' }
+    );
+
+    bentoCardRefs.current.forEach((el) => {
+      if (el) observer.observe(el);
+    });
+
+    return () => observer.disconnect();
+  }, [showAccountPage, report, loading]);
 
   const updateScanHistory = (targetKey: string, score: number, findingsList: any[] = []) => {
     try {
+      if (!activePlanPolicy.features.scoreDelta) {
+        setScoreDelta(null);
+        return;
+      }
       const raw = localStorage.getItem('checkmyapk_history');
       const map: Record<string, { score: number; at: string; findingTypes?: string[] }> = raw ? JSON.parse(raw) : {};
       const prev = map[targetKey];
@@ -281,6 +567,11 @@ export default function App() {
   };
 
   const handleLoadDomainChallenge = async () => {
+    if (!activePlanPolicy.features.burst15Req) {
+      setError('Domain Ownership Verification & 15-Request Burst require Pro Security ($15/mo) or Team & Agency.');
+      navigateSection('pricing');
+      return;
+    }
     const clean = url.trim();
     if (!clean) {
       setError('Enter your website URL above first to generate a domain ownership token.');
@@ -391,6 +682,10 @@ export default function App() {
 
   const handleExportJson = () => {
     if (!report) return;
+    if (!activePlanPolicy.features.exports) {
+      navigateSection('pricing');
+      return;
+    }
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
     const urlObj = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -422,13 +717,20 @@ export default function App() {
       `## Findings (${r.findings.length})`,
       ...r.findings.map((f) =>
         `### [${f.severity}] ${f.type}${f.owaspRef ? ` (${f.owaspRef})` : ''}\n- **Proof:** \`${f.proof}\`\n- **Impact:** ${f.description}\n- **Fix:** ${f.remediation}\n`
-      )
+      ),
+      ``,
+      `---`,
+      `> **Assessment Disclaimer:** Automated point-in-time static & non-destructive passive/safe dynamic audit generated by CheckMyAPK.com at ${r.scanTimestamp}. *Heuristic* findings depend on runtime context (sanitizers, server controls, key referrer limits) and should be verified by an engineer. Automated scans do not replace a manual penetration test for compliance sign-off; test only targets you own or have written authorization to assess.`
     ];
     return { targetName, text: lines.join('\n') };
   };
 
   const handleExportMarkdown = () => {
     if (!report) return;
+    if (!activePlanPolicy.features.exports) {
+      navigateSection('pricing');
+      return;
+    }
     const { targetName, text } = buildMarkdownReport(report);
     const blob = new Blob([text], { type: 'text/markdown' });
     const urlObj = URL.createObjectURL(blob);
@@ -442,6 +744,10 @@ export default function App() {
 
   const handleCopyMarkdown = () => {
     if (!report) return;
+    if (!activePlanPolicy.features.exports) {
+      navigateSection('pricing');
+      return;
+    }
     const { text } = buildMarkdownReport(report);
     navigator.clipboard.writeText(text);
     setMdCopied(true);
@@ -477,6 +783,7 @@ export default function App() {
     const finalUrl = (targetToScan || url).trim();
     if (!finalUrl) return;
 
+    closeAccountPage(true);
     setUrl(finalUrl);
     setLoading(true);
     setError(null);
@@ -489,7 +796,9 @@ export default function App() {
       'Scanning JS bundles for leaked secrets & Static DOM XSS sinks...',
       'Auditing JWT claims, HTTP Security Headers & CORS origin policies...',
       'Testing Firebase / Supabase rules & passive API route error leaks...',
-      'Sending 15-request burst to test Denial-of-Wallet rate limits...',
+      activePlanPolicy.features.burst15Req
+        ? 'Sending 15-request burst to test Denial-of-Wallet rate limits...'
+        : 'Running safe 4-request rate-limit probe (Starter tier)...',
       'Invoking Gemini Neural Engine for custom architectural threat synthesis...'
     ];
 
@@ -503,8 +812,12 @@ export default function App() {
 
     try {
       const payload: Record<string, string> = { targetUrl: finalUrl };
-      if (webAuthHeader.trim()) payload.authHeader = webAuthHeader.trim();
-      if (webAuthCookie.trim()) payload.authCookie = webAuthCookie.trim();
+      if (activePlanPolicy.features.authenticatedWebScan && webAuthHeader.trim()) {
+        payload.authHeader = webAuthHeader.trim();
+      }
+      if (activePlanPolicy.features.authenticatedWebScan && webAuthCookie.trim()) {
+        payload.authCookie = webAuthCookie.trim();
+      }
 
       const res = await fetch('/api/scan', {
         method: 'POST',
@@ -522,6 +835,7 @@ export default function App() {
       const data = await res.json();
       setReport(data);
       updateScanHistory(`web:${data.targetUrl}`, data.score, data.findings);
+      persistScanToAccount(data.targetUrl, 'web', data);
       const hasVulns = data.findings?.some((f: any) => f.severity !== 'PASS');
       setFilter(hasVulns ? 'vulns' : 'all');
       setLoading(false);
@@ -540,6 +854,16 @@ export default function App() {
       return;
     }
 
+    const maxBytes = activePlanPolicy.maxApkMb * 1024 * 1024;
+    if (selectedFile.size > maxBytes) {
+      const fileSizeMb = (selectedFile.size / (1024 * 1024)).toFixed(1);
+      setError(
+        `APK file (${fileSizeMb} MB) exceeds your ${activePlanPolicy.name} limit of ${activePlanPolicy.maxApkMb} MB. Upgrade to Pro (75 MB) or Team & Agency (150 MB).`
+      );
+      return;
+    }
+
+    closeAccountPage(true);
     setLoading(true);
     setError(null);
     setReport(null);
@@ -565,7 +889,9 @@ export default function App() {
       const finishWithJob = (job: any) => {
         const data = job.result;
         setReport(data);
-        updateScanHistory(`apk:${data.apkMeta?.packageName || selectedFile.name}`, data.score, data.findings);
+        const pkgLabel = data.apkMeta?.packageName || selectedFile.name;
+        updateScanHistory(`apk:${pkgLabel}`, data.score, data.findings);
+        persistScanToAccount(pkgLabel, 'apk', data);
         const hasVulns = data.findings?.some((f: any) => f.severity !== 'PASS');
         setFilter(hasVulns ? 'vulns' : 'all');
         setLoading(false);
@@ -654,116 +980,354 @@ export default function App() {
 
   return (
     <div className="min-h-screen text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
-      {/* ── Interactive 3D Arrow-Key Cyber Matrix Canvas ── */}
-      <CyberBackground accentMode={scanMode} />
+      {/* ── Living Neural Medusa & Reactive Spores Backdrop ── */}
+      <CyberBackground accentMode={scanMode} theme={theme} />
 
       {/* ── Ultra-Sleek Glassmorphism Navbar ── */}
       <header className="px-4 sm:px-8 py-3.5 border-b border-white/[0.08] bg-[#04060c]/75 backdrop-blur-xl sticky top-0 z-50 flex items-center justify-between no-print">
         <div
           onClick={() => {
+            closeAccountPage(true);
+            closePricingPage(true);
             setReport(null);
             setError(null);
           }}
-          className="flex items-center gap-3 cursor-pointer group"
+          className="flex flex-col items-start cursor-pointer group select-none"
         >
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/20 to-purple-500/20 border border-cyan-400/30 flex items-center justify-center text-cyan-300 cyber-glow-cyan group-hover:scale-105 transition-transform">
-            <Shield className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-lg font-extrabold tracking-tight text-white">
-                CheckMy<span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400">APK</span>
+          <div className="flex items-center gap-2">
+            <svg
+              viewBox="0 0 20 16"
+              fill="none"
+              className="w-4 h-4 shrink-0 text-[#4e8df5] group-hover:scale-110 transition-transform duration-200 drop-shadow-[0_0_8px_rgba(78,141,245,0.45)]"
+              aria-hidden="true"
+            >
+              <path
+                d="M2.5 8.5L7.2 13L17.5 2.5"
+                stroke="currentColor"
+                strokeWidth="2.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <div className="flex items-baseline">
+              <span
+                className="italic font-bold text-xl sm:text-[23px] tracking-[-0.035em] leading-none bg-clip-text text-transparent pr-1"
+                style={{
+                  backgroundImage:
+                    theme === 'light'
+                      ? 'linear-gradient(90deg, #0f172a 0%, #0f172a 42%, #1d4ed8 60%, #0284c7 76%, #7c3aed 100%)'
+                      : 'linear-gradient(90deg, #ffffff 0%, #ffffff 42%, #cbd5f5 58%, #38bdf8 74%, #7c6cf8 89%, #a855f7 100%)',
+                }}
+              >
+                CheckMyAPK
               </span>
-              <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 tracking-wider">
-                .COM
+              <span className="font-sans not-italic font-semibold text-xs sm:text-[13px] tracking-[-0.01em] text-slate-400/90 -ml-0.5 leading-none">
+                .com
               </span>
             </div>
-            <p className="text-[10px] font-semibold text-slate-400 tracking-wider uppercase leading-none mt-0.5 hidden sm:block">
-              Enterprise APK & Web Security Suite
-            </p>
           </div>
+          <p className="pl-6 text-[8.5px] sm:text-[9px] font-mono font-medium text-slate-400/80 tracking-[0.28em] uppercase leading-none mt-1 hidden sm:block">
+            SCAN. FIX. SHIP SAFE.
+          </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-bold text-emerald-300">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Engine v4.5 Online</span>
-          </div>
+        {/* Center SaaS Navigation Links */}
+        <nav
+          aria-label="Primary Navigation"
+          className="hidden lg:flex items-center gap-7 text-xs font-semibold text-slate-400"
+        >
+          <button
+            type="button"
+            onClick={() => navigateSection('scanner-command', 'apk')}
+            className="hover:text-white transition-colors cursor-pointer"
+          >
+            APK Audit
+          </button>
+          <button
+            type="button"
+            onClick={() => navigateSection('scanner-command', 'web')}
+            className="hover:text-white transition-colors cursor-pointer"
+          >
+            Web &amp; API
+          </button>
+          <button
+            type="button"
+            onClick={() => navigateSection('features')}
+            className="hover:text-white transition-colors cursor-pointer"
+          >
+            Features
+          </button>
+          <button
+            type="button"
+            onClick={openPricingPage}
+            className={`transition-colors cursor-pointer ${
+              showPricingPage ? 'text-cyan-300 font-bold' : 'hover:text-white'
+            }`}
+          >
+            Pricing
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowTrustModal('methodology')}
+            className="hover:text-white transition-colors cursor-pointer"
+          >
+            How It Works
+          </button>
+          <button
+            type="button"
+            onClick={() => navigateSection('contact')}
+            className="hover:text-white transition-colors cursor-pointer"
+          >
+            Contact
+          </button>
+        </nav>
+
+        <div className="flex items-center gap-2 sm:gap-2.5">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            aria-label={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            title={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+            className="p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.1] border border-white/10 text-slate-300 hover:text-white transition-all cursor-pointer"
+          >
+            {theme === 'dark' ? (
+              <Sun className="w-4 h-4 text-amber-300" />
+            ) : (
+              <Moon className="w-4 h-4 text-indigo-600" />
+            )}
+          </button>
 
           <button
+            type="button"
             onClick={() => setShowTrustModal('methodology')}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.04] hover:bg-white/[0.1] text-slate-300 border border-white/10 transition-all cursor-pointer"
+            className="lg:hidden hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.04] hover:bg-white/[0.1] text-slate-300 border border-white/10 transition-all cursor-pointer"
           >
             <Info className="w-3.5 h-3.5 text-cyan-400" />
             <span>How It Works</span>
           </button>
 
-          {report && (
-            <>
+          {!showAccountPage && !showPricingPage && report && (
+            activePlanPolicy.features.exports ? (
+              <>
+                <button
+                  onClick={handleExportJson}
+                  title="Download JSON Security Telemetry"
+                  className="px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 border border-white/10 transition-all hidden sm:flex items-center gap-1.5 cursor-pointer"
+                >
+                  <FileJson className="w-3.5 h-3.5 text-amber-400" />
+                  <span>JSON</span>
+                </button>
+                <button
+                  onClick={handleExportMarkdown}
+                  title="Download Markdown Issue Report"
+                  className="px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 border border-white/10 transition-all hidden sm:flex items-center gap-1.5 cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 text-purple-400" />
+                  <span>MD</span>
+                </button>
+                <button
+                  onClick={handleCopyMarkdown}
+                  title="Copy Markdown Summary for GitHub PR / Slack"
+                  className="px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 border border-white/10 transition-all hidden md:flex items-center gap-1.5 cursor-pointer"
+                >
+                  {mdCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-cyan-300" />}
+                  <span>{mdCopied ? 'Copied!' : 'Copy PR'}</span>
+                </button>
+                <button
+                  onClick={() => window.print()}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-100 border border-white/10 transition-all flex items-center gap-2 cursor-pointer shadow-sm"
+                >
+                  <Download className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Export PDF</span>
+                </button>
+              </>
+            ) : (
               <button
-                onClick={handleExportJson}
-                title="Download JSON Security Telemetry"
-                className="px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 border border-white/10 transition-all hidden sm:flex items-center gap-1.5 cursor-pointer"
+                type="button"
+                onClick={openPricingPage}
+                title="PDF, JSON, Markdown & PR exports require Pro Security or Team & Agency"
+                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
               >
-                <FileJson className="w-3.5 h-3.5 text-amber-400" />
-                <span>JSON</span>
+                <Lock className="w-3.5 h-3.5" />
+                <span>Unlock PDF / PR Exports (Pro)</span>
               </button>
-              <button
-                onClick={handleExportMarkdown}
-                title="Download Markdown Issue Report"
-                className="px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 border border-white/10 transition-all hidden sm:flex items-center gap-1.5 cursor-pointer"
-              >
-                <FileText className="w-3.5 h-3.5 text-purple-400" />
-                <span>MD</span>
-              </button>
-              <button
-                onClick={handleCopyMarkdown}
-                title="Copy Markdown Summary for GitHub PR / Slack"
-                className="px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 border border-white/10 transition-all hidden md:flex items-center gap-1.5 cursor-pointer"
-              >
-                {mdCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-cyan-300" />}
-                <span>{mdCopied ? 'Copied!' : 'Copy PR'}</span>
-              </button>
-            </>
+            )
           )}
 
-          <button
-            onClick={() => window.print()}
-            disabled={!report}
-            className="px-4 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-100 border border-white/10 transition-all disabled:opacity-30 disabled:pointer-events-none flex items-center gap-2 cursor-pointer shadow-sm"
-          >
-            <Download className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Export PDF</span>
-          </button>
+          {currentUser ? (
+            <button
+              type="button"
+              onClick={() => (showAccountPage ? closeAccountPage(true) : openAccountPage())}
+              className={`flex items-center gap-2 pl-1.5 pr-3 py-1 rounded-full border transition-all cursor-pointer ${
+                showAccountPage
+                  ? 'bg-cyan-500/15 border-cyan-400/50 shadow-[0_0_20px_rgba(34,211,238,0.18)]'
+                  : 'bg-white/[0.06] hover:bg-white/[0.11] border-white/15'
+              }`}
+            >
+              {currentUser.avatarUrl ? (
+                <img
+                  src={currentUser.avatarUrl}
+                  alt={currentUser.name}
+                  referrerPolicy="no-referrer"
+                  className="w-6 h-6 rounded-full object-cover"
+                />
+              ) : (
+                <span className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-400 to-purple-500 text-slate-950 font-black text-[10px] flex items-center justify-center">
+                  {currentUser.name.slice(0, 2).toUpperCase()}
+                </span>
+              )}
+              <span className="text-xs font-bold text-white hidden sm:inline">
+                {currentUser.name.split(' ')[0]}
+              </span>
+              <span className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold">
+                {currentUser.plan}
+              </span>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            </button>
+          ) : (
+            !report && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAuthModalMode('login')}
+                  className="px-3 py-1.5 rounded-full text-xs font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer"
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthModalMode('register')}
+                  className="px-4 py-1.5 rounded-full text-xs font-extrabold bg-white hover:bg-slate-200 text-slate-950 transition-all shadow-sm cursor-pointer"
+                >
+                  Get Started
+                </button>
+              </div>
+            )
+          )}
         </div>
       </header>
 
       {/* ── Main Interactive Workspace ── */}
       <main className="flex-1 max-w-5xl mx-auto w-full p-4 sm:p-8 flex flex-col gap-10 relative z-10">
+        {/* ── Dedicated Full-Page Profile & Account Workspace ── */}
+        {showAccountPage && currentUser && (
+          <AccountPage
+            user={currentUser}
+            onBack={() => closeAccountPage(true)}
+            onUserUpdated={(user) => setCurrentUser(user)}
+            onLogout={handleLogout}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            onOpenPricingPage={openPricingPage}
+            onRescanWeb={(targetUrl) => {
+              closeAccountPage(true);
+              setScanMode('web');
+              setUrl(targetUrl);
+              handleScanWeb(targetUrl);
+            }}
+          />
+        )}
+
+        {/* ── Dedicated Full-Page Pricing & Comparison Matrix ── */}
+        {!showAccountPage && showPricingPage && (
+          <PricingPage
+            currentUser={currentUser}
+            onSelectPlan={handleSelectPlan}
+            onBack={() => closePricingPage(true)}
+            onOpenLegal={(doc) => openTrustModal(doc)}
+          />
+        )}
+
         {/* ── Hero & Command Center ── */}
-        {!report && !loading && (
+        {!showAccountPage && !showPricingPage && !report && !loading && (
           <div className="flex flex-col items-center text-center pt-4 sm:pt-8 pb-6 space-y-8">
-            {/* Top Status Badge */}
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass-card border border-cyan-400/25 text-cyan-300 text-xs font-bold shadow-lg">
-              <Sparkles className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
-              <span>AI-Powered OWASP MASVS & Web Penetration Tester</span>
+            {/* Top Status Badge (Dynamic Mode-Aware SEO Eyebrow) */}
+            <div
+              className={`inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full glass-card border shadow-[0_8px_30px_rgba(0,0,0,0.45)] backdrop-blur-md transition-colors duration-300 ${
+                scanMode === 'apk' ? 'border-purple-400/25' : 'border-cyan-400/25'
+              }`}
+            >
+              <Sparkles
+                className={`w-3.5 h-3.5 animate-pulse shrink-0 transition-colors duration-300 ${
+                  scanMode === 'apk' ? 'text-purple-400' : 'text-cyan-400'
+                }`}
+              />
+              <span className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-xs">
+                <span
+                  className={`font-mono uppercase tracking-[0.14em] text-[10px] font-semibold transition-colors duration-300 ${
+                    scanMode === 'apk' ? 'text-purple-300/95' : 'text-cyan-300/95'
+                  }`}
+                >
+                  {scanMode === 'apk' ? 'Deep Binary Audit' : 'Live Attack Probe'}
+                </span>
+                <span className="w-1 h-1 rounded-full bg-slate-600 hidden sm:inline-block" aria-hidden="true" />
+                <span className="font-medium tracking-tight text-slate-200">
+                  {scanMode === 'apk'
+                    ? 'Android APK Decompiler, Secret & MASVS Scanner'
+                    : 'Website, TLS, CORS & API Vulnerability Scanner'}
+                </span>
+              </span>
             </div>
 
-            {/* Headline */}
-            <div className="max-w-3xl space-y-4">
-              <h1 className="text-4xl sm:text-6xl font-black tracking-tight text-white leading-[1.1]">
-                Audit Your APK & Web App Before{' '}
-                <span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-purple-400 to-emerald-400 animate-gradient-text">
+            {/* Headline (Premium Mixed Typography: Sans + Geometric Display + Editorial Italic Serif) */}
+            <div className="max-w-3xl space-y-5">
+              <h1 className="text-4xl sm:text-6xl leading-[1.15] text-balance">
+                <span
+                  className={`font-google font-semibold tracking-[-0.045em] text-transparent bg-clip-text bg-gradient-to-b ${
+                    theme === 'light'
+                      ? 'from-slate-950 via-slate-900 to-slate-700'
+                      : 'from-white via-white to-slate-300'
+                  }`}
+                >
+                  Audit{' '}
+                </span>
+                <span className="font-google font-light tracking-[-0.03em] text-slate-400">
+                  Your{' '}
+                </span>
+                <span className="font-mono font-semibold text-[0.68em] tracking-[-0.02em] px-2.5 py-0.5 rounded-xl bg-purple-500/15 border border-purple-400/30 text-purple-200 align-middle mx-0.5 shadow-[0_0_22px_rgba(168,85,247,0.18)]">
+                  APK
+                </span>
+                <span className="font-editorial italic font-normal text-slate-400/90 text-[1.06em] mx-1.5">
+                  &amp;
+                </span>
+                <span
+                  className={`font-google font-semibold tracking-[-0.045em] text-transparent bg-clip-text bg-gradient-to-b ${
+                    theme === 'light'
+                      ? 'from-sky-700 via-cyan-600 to-indigo-700'
+                      : 'from-cyan-100 via-white to-cyan-300'
+                  }`}
+                >
+                  Web
+                </span>
+                <br className="hidden sm:block" />{' '}
+                <span className="font-google font-medium tracking-[-0.04em] text-slate-200/95">
+                  App{' '}
+                </span>
+                <span className="font-google font-light tracking-[-0.03em] text-slate-400">
+                  Before{' '}
+                </span>
+                <span
+                  className={`font-editorial italic font-normal text-[1.22em] tracking-[-0.015em] leading-none inline-block pr-2 pb-0.5 text-transparent bg-clip-text bg-gradient-to-r animate-gradient-text ${
+                    theme === 'light'
+                      ? 'from-cyan-600 via-violet-600 to-emerald-600'
+                      : 'from-cyan-300 via-violet-300 to-emerald-300 drop-shadow-[0_0_26px_rgba(34,211,238,0.25)]'
+                  }`}
+                >
                   Hackers Do.
                 </span>
               </h1>
-              <p className="text-sm sm:text-base text-slate-300/90 max-w-2xl mx-auto leading-relaxed font-medium">
-                Drop any Android <code className="text-purple-300 bg-purple-500/10 px-1.5 py-0.5 rounded">.apk</code> or live website URL to detect leaked API keys, debug backdoors, cleartext MITM flaws, and Denial-of-Wallet gaps in seconds.
+              <p className="text-sm sm:text-base text-slate-400 max-w-2xl mx-auto leading-relaxed font-normal tracking-[-0.005em]">
+                Drop any Android <code className="font-mono text-xs text-cyan-300 bg-cyan-500/10 border border-cyan-400/20 px-1.5 py-0.5 rounded-md">.apk</code> or live website URL to detect{' '}
+                <span className="text-slate-200 font-medium">leaked API keys</span>,{' '}
+                <span className="text-slate-200 font-medium">debug backdoors</span>, cleartext MITM flaws, and Denial-of-Wallet gaps in seconds.
               </p>
             </div>
 
             {/* ── Glassmorphic Command Center Panel ── */}
-            <div className="w-full max-w-2xl glass-panel rounded-3xl p-4 sm:p-6 shadow-2xl border border-white/10 relative overflow-hidden">
+            <div
+              id="scanner-command"
+              className="scroll-mt-24 w-full max-w-2xl glass-panel rounded-3xl p-4 sm:p-6 shadow-2xl border border-white/10 relative overflow-hidden"
+            >
               {/* Mode Switcher Tabs */}
               <div className="flex items-center p-1.5 bg-[#050811]/90 border border-white/10 rounded-2xl mb-5 shadow-inner">
                 <button
@@ -856,7 +1420,7 @@ export default function App() {
                       <p className="text-xs text-slate-400 font-medium">
                         {apkFile
                           ? `${(apkFile.size / 1024 / 1024).toFixed(2)} MB • Ready for Dalvik DEX & Manifest Decompilation`
-                          : 'Click to browse or drag & drop • Supports up to 100MB • Zero server storage'}
+                          : `Click to browse or drag & drop • Up to ${activePlanPolicy.maxApkMb}MB (${activePlanPolicy.name}) • Zero server storage`}
                       </p>
                     </div>
                   </div>
@@ -903,15 +1467,30 @@ export default function App() {
                     }}
                     className="w-full flex flex-col sm:flex-row gap-2.5 bg-[#050811]/90 p-2 rounded-2xl border border-white/10 focus-within:border-cyan-400/60 transition-all shadow-inner"
                   >
-                    <div className="flex items-center gap-2.5 px-3 flex-1">
+                    <div className="flex items-center gap-2.5 px-3 flex-1 min-w-0">
                       <Search className="w-5 h-5 text-cyan-400 shrink-0" />
                       <input
+                        ref={urlInputRef}
                         type="text"
                         placeholder="https://your-website.com"
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}
-                        className="w-full bg-transparent text-sm font-semibold text-white placeholder-slate-500 focus:outline-none py-1.5"
+                        className="w-full min-w-0 bg-transparent text-sm font-semibold text-white placeholder-slate-500 focus:outline-none py-1.5"
                       />
+                      {url.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUrl('');
+                            urlInputRef.current?.focus();
+                          }}
+                          aria-label="Clear target URL"
+                          title="Clear URL"
+                          className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.14] border border-white/10 text-slate-400 hover:text-white transition-colors shrink-0 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                     <button
                       type="submit"
@@ -924,59 +1503,92 @@ export default function App() {
 
                   {/* Optional Authenticated API & JWT Audit */}
                   <div className="text-left">
-                    <button
-                      type="button"
-                      onClick={() => setShowWebAuthOptions(!showWebAuthOptions)}
-                      className="text-[11px] font-bold text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Lock className="w-3.5 h-3.5" />
-                      <span>
-                        {showWebAuthOptions
-                          ? 'Hide Authenticated API & JWT Audit Inputs'
-                          : '+ Optional: Audit With Bearer JWT or Session Cookie (Same-Origin Only)'}
-                      </span>
-                    </button>
+                    {activePlanPolicy.features.authenticatedWebScan ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setShowWebAuthOptions(!showWebAuthOptions)}
+                          className="text-[11px] font-bold text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>
+                            {showWebAuthOptions
+                              ? 'Hide Authenticated API & JWT Audit Inputs'
+                              : '+ Optional: Audit With Bearer JWT or Session Cookie (Same-Origin Only)'}
+                          </span>
+                        </button>
 
-                    {showWebAuthOptions && (
-                      <div className="mt-2.5 p-3.5 rounded-2xl bg-[#050811]/90 border border-cyan-500/25 space-y-2.5">
-                        <div className="text-[10px] text-slate-400">
-                          Credentials are forwarded strictly to the target&apos;s own origin for safe read-only checks (JWT decode + auth control verification) and are never logged or stored.
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          <input
-                            type="password"
-                            autoComplete="off"
-                            placeholder="Bearer <JWT_TOKEN> (optional)"
-                            value={webAuthHeader}
-                            onChange={(e) => setWebAuthHeader(e.target.value)}
-                            className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400/50 font-mono"
-                          />
-                          <input
-                            type="password"
-                            autoComplete="off"
-                            placeholder="Cookie: session=... (optional)"
-                            value={webAuthCookie}
-                            onChange={(e) => setWebAuthCookie(e.target.value)}
-                            className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400/50 font-mono"
-                          />
-                        </div>
-                      </div>
-                    )}
-                    <div className="mt-2 flex items-center justify-between flex-wrap gap-2">
+                        {showWebAuthOptions && (
+                          <div className="mt-2.5 p-3.5 rounded-2xl bg-[#050811]/90 border border-cyan-500/25 space-y-2.5">
+                            <div className="text-[10px] text-slate-400">
+                              Credentials are forwarded strictly to the target&apos;s own origin for safe read-only checks (JWT decode + auth control verification) and are never logged or stored.
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <input
+                                type="password"
+                                autoComplete="off"
+                                placeholder="Bearer <JWT_TOKEN> (optional)"
+                                value={webAuthHeader}
+                                onChange={(e) => setWebAuthHeader(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400/50 font-mono"
+                              />
+                              <input
+                                type="password"
+                                autoComplete="off"
+                                placeholder="Cookie: session=... (optional)"
+                                value={webAuthCookie}
+                                onChange={(e) => setWebAuthCookie(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400/50 font-mono"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    ) : (
                       <button
                         type="button"
-                        onClick={handleLoadDomainChallenge}
-                        className="text-[11px] font-bold text-emerald-300 hover:text-emerald-200 inline-flex items-center gap-1.5 cursor-pointer"
+                        onClick={openPricingPage}
+                        className="text-[11px] font-bold text-slate-400 hover:text-amber-300 inline-flex items-center gap-1.5 cursor-pointer"
                       >
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                        <span>Verify Domain Ownership (Unlock Full 15-Request Rate Burst)</span>
+                        <Lock className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Authenticated Bearer JWT / Session Cookie Scan</span>
+                        <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                          Pro Only
+                        </span>
                       </button>
+                    )}
+
+                    <div className="mt-2 flex items-center justify-between flex-wrap gap-2">
+                      {activePlanPolicy.features.burst15Req ? (
+                        <button
+                          type="button"
+                          onClick={handleLoadDomainChallenge}
+                          className="text-[11px] font-bold text-emerald-300 hover:text-emerald-200 inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          <span>Verify Domain Ownership (Unlock Full 15-Request Rate Burst)</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={openPricingPage}
+                          className="text-[11px] font-bold text-slate-400 hover:text-amber-300 inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Lock className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Verify Domain Ownership (15-Request Burst)</span>
+                          <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                            Pro Only
+                          </span>
+                        </button>
+                      )}
                       <span className="text-[10px] text-slate-500">
-                        Unverified public targets use a safe 4-request gentle profile
+                        {activePlanPolicy.features.burst15Req
+                          ? 'Unverified targets use a safe 4-request profile'
+                          : 'Starter tier runs safe 4-request gentle profile'}
                       </span>
                     </div>
 
-                    {domainChallenge && (
+                    {activePlanPolicy.features.burst15Req && domainChallenge && (
                       <div className="mt-2 p-3 rounded-2xl bg-[#050811]/90 border border-emerald-500/25 text-[10px] font-mono space-y-1.5 text-slate-300">
                         <div className="text-emerald-300 font-bold">
                           Add either TXT record or HTML Meta Tag to verify &quot;{domainChallenge.host}&quot;:
@@ -1020,64 +1632,105 @@ export default function App() {
               )}
             </div>
 
-            {/* Keyboard Arrow Interaction Pill */}
-            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/[0.03] border border-white/10 text-[11px] font-semibold text-slate-400">
-              <span>⌨️ Pro Tip: Use keyboard</span>
-              <span className="px-1.5 py-0.5 rounded bg-white/10 text-cyan-300 font-mono text-[10px] font-bold">
-                ↑ ↓ ← →
-              </span>
-              <span>arrow keys to pilot the live 3D cyber background!</span>
-            </div>
-
-            {/* ── Enterprise Feature Bento Grid ── */}
-            <div className="w-full pt-4">
+            {/* ── Enterprise Feature Bento Grid (Staggered Scroll Reveal) ── */}
+            <div id="features" className="scroll-mt-24 w-full pt-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-left">
-                <div className="glass-card p-5 rounded-2xl border border-white/10 hover:border-purple-400/40 transition-all group">
-                  <div className="w-10 h-10 rounded-xl bg-purple-500/15 border border-purple-400/30 flex items-center justify-center text-purple-400 mb-3 group-hover:scale-110 transition-transform">
-                    <Binary className="w-5 h-5" />
-                  </div>
-                  <h3 className="text-sm font-extrabold text-white mb-1">Dalvik DEX Scanner</h3>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Decompiles APK bytecode and AndroidBinaryXML to expose hardcoded keys, debug flags & insecure manifests.
-                  </p>
-                </div>
-
-                <div className="glass-card p-5 rounded-2xl border border-white/10 hover:border-cyan-400/40 transition-all group">
-                  <div className="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-400/30 flex items-center justify-center text-cyan-400 mb-3 group-hover:scale-110 transition-transform">
-                    <Zap className="w-5 h-5" />
-                  </div>
-                  <h3 className="text-sm font-extrabold text-white mb-1">Denial-of-Wallet Probe</h3>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Fires rapid burst payloads at live API endpoints to verify rate limiting before bots drain your AI credits.
-                  </p>
-                </div>
-
-                <div className="glass-card p-5 rounded-2xl border border-white/10 hover:border-emerald-400/40 transition-all group">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-400/30 flex items-center justify-center text-emerald-400 mb-3 group-hover:scale-110 transition-transform">
-                    <Sparkles className="w-5 h-5" />
-                  </div>
-                  <h3 className="text-sm font-extrabold text-white mb-1">AI Code Fix Doctor</h3>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Not just alerts — gives copy-paste patches for Gradle, AndroidManifest, Vercel, Next.js & Express in simple Hinglish/English.
-                  </p>
-                </div>
-
-                <div className="glass-card p-5 rounded-2xl border border-white/10 hover:border-amber-400/40 transition-all group">
-                  <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-400/30 flex items-center justify-center text-amber-400 mb-3 group-hover:scale-110 transition-transform">
-                    <Lock className="w-5 h-5" />
-                  </div>
-                  <h3 className="text-sm font-extrabold text-white mb-1">Play Store Ready</h3>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Aligns directly with MobSF & OWASP MASVS standards so your Android app passes Google Play reviews cleanly.
-                  </p>
-                </div>
+                {[
+                  {
+                    indexLabel: '01',
+                    title: 'Dalvik DEX Scanner',
+                    description:
+                      'Decompiles APK bytecode and AndroidBinaryXML to expose hardcoded keys, debug flags & insecure manifests.',
+                    icon: Binary,
+                    borderHover: 'hover:border-purple-400/40 hover:shadow-[0_18px_45px_-15px_rgba(168,85,247,0.3)]',
+                    iconBox: 'bg-purple-500/15 border-purple-400/30 text-purple-400',
+                    topGlow: 'from-purple-400/50 via-purple-400/10 to-transparent',
+                  },
+                  {
+                    indexLabel: '02',
+                    title: 'Denial-of-Wallet Probe',
+                    description:
+                      'Fires rapid burst payloads at live API endpoints to verify rate limiting before bots drain your AI credits.',
+                    icon: Zap,
+                    borderHover: 'hover:border-cyan-400/40 hover:shadow-[0_18px_45px_-15px_rgba(6,182,212,0.3)]',
+                    iconBox: 'bg-cyan-500/15 border-cyan-400/30 text-cyan-400',
+                    topGlow: 'from-cyan-400/50 via-cyan-400/10 to-transparent',
+                  },
+                  {
+                    indexLabel: '03',
+                    title: 'AI Code Fix Doctor',
+                    description:
+                      'Not just alerts — gives copy-paste patches for Gradle, AndroidManifest, Vercel, Next.js & Express in simple Hinglish/English.',
+                    icon: Sparkles,
+                    borderHover: 'hover:border-emerald-400/40 hover:shadow-[0_18px_45px_-15px_rgba(16,185,129,0.3)]',
+                    iconBox: 'bg-emerald-500/15 border-emerald-400/30 text-emerald-400',
+                    topGlow: 'from-emerald-400/50 via-emerald-400/10 to-transparent',
+                  },
+                  {
+                    indexLabel: '04',
+                    title: 'Play Store Ready',
+                    description:
+                      'Aligns directly with MobSF & OWASP MASVS standards so your Android app passes Google Play reviews cleanly.',
+                    icon: Lock,
+                    borderHover: 'hover:border-amber-400/40 hover:shadow-[0_18px_45px_-15px_rgba(245,158,11,0.28)]',
+                    iconBox: 'bg-amber-500/15 border-amber-400/30 text-amber-400',
+                    topGlow: 'from-amber-400/50 via-amber-400/10 to-transparent',
+                  },
+                ].map((card, idx) => {
+                  const IconComp = card.icon;
+                  return (
+                    <div
+                      key={card.title}
+                      ref={(el) => {
+                        bentoCardRefs.current[idx] = el;
+                      }}
+                      data-bento-index={idx}
+                      className={`bento-reveal-item bento-stagger-${idx} ${
+                        revealedBentoCards[idx] ? 'is-visible' : ''
+                      } h-full`}
+                    >
+                      <div
+                        className={`glass-card relative overflow-hidden h-full p-5 rounded-2xl border border-white/10 ${card.borderHover} hover:-translate-y-1 transition-all duration-300 group`}
+                      >
+                        <div
+                          className={`pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r ${card.topGlow} opacity-40 group-hover:opacity-100 transition-opacity duration-300`}
+                          aria-hidden="true"
+                        />
+                        <div className="flex items-start justify-between mb-3">
+                          <div
+                            className={`w-10 h-10 rounded-xl border flex items-center justify-center ${card.iconBox} group-hover:scale-110 transition-transform duration-300`}
+                          >
+                            <IconComp className="w-5 h-5" />
+                          </div>
+                          <span className="font-mono text-[10px] font-semibold tracking-widest text-slate-600 group-hover:text-slate-400 transition-colors">
+                            {card.indexLabel}
+                          </span>
+                        </div>
+                        <h3 className="text-sm font-extrabold text-white mb-1.5 tracking-tight">
+                          {card.title}
+                        </h3>
+                        <p className="text-xs text-slate-400 leading-relaxed">
+                          {card.description}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
+
+            <HomepageSections
+              currentUser={currentUser}
+              onSelectPlan={handleSelectPlan}
+              onStartAudit={(mode) => navigateSection('scanner-command', mode)}
+              onOpenLegal={(doc) => openTrustModal(doc)}
+              onOpenPricingPage={openPricingPage}
+            />
           </div>
         )}
 
         {/* ── Live Scanning Theater ── */}
-        {loading && (
+        {!showAccountPage && !showPricingPage && loading && (
           <div className="flex flex-col items-center justify-center max-w-2xl mx-auto my-auto w-full py-12 gap-6">
             <div className="relative">
               <div
@@ -1108,7 +1761,7 @@ export default function App() {
         )}
 
         {/* ── Executive Report Dashboard ── */}
-        {report && (
+        {!showAccountPage && !showPricingPage && report && (
           <div className="flex flex-col gap-6 pb-10">
             {report.isDemoPreview && (
               <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-400/35 text-amber-200 text-xs font-bold flex items-center justify-between gap-3 flex-wrap">
@@ -1151,7 +1804,7 @@ export default function App() {
                         {report.apkMeta.versionName ? ` • v${report.apkMeta.versionName}` : ''}
                       </span>
                     )}
-                    {scoreDelta && (
+                    {activePlanPolicy.features.scoreDelta && scoreDelta && (
                       <span
                         className={`text-[10px] font-black px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${
                           scoreDelta.delta >= 0
@@ -1183,7 +1836,7 @@ export default function App() {
                       </span>
                     )}
                   </div>
-                  {scoreDelta && scoreDelta.fixedIssues.length > 0 && (
+                  {activePlanPolicy.features.scoreDelta && scoreDelta && scoreDelta.fixedIssues.length > 0 && (
                     <div className="mt-1 text-[10px] text-emerald-300 font-semibold">
                       Resolved since last scan: {scoreDelta.fixedIssues.slice(0, 3).join(' • ')}
                       {scoreDelta.fixedIssues.length > 3 ? ` (+${scoreDelta.fixedIssues.length - 3} more)` : ''}
@@ -1880,8 +2533,14 @@ export default function App() {
               </div>
             </div>
 
-            {/* 🛠️ Master Remediation Playbook (Web Only) */}
-            {!report.isApkAudit && report.findings.filter((f) => f.severity !== 'PASS' && f.severity !== 'INFO').length > 0 && (
+            {/* 🛠️ Master Remediation Playbook (Web Only — only when Header/CORS gaps exist) */}
+            {!report.isApkAudit &&
+              report.findings.some(
+                (f) =>
+                  f.severity !== 'PASS' &&
+                  f.severity !== 'INFO' &&
+                  /header|cors/i.test(f.category || '')
+              ) && (
               <div className="glass-panel border-emerald-500/30 rounded-3xl p-5 space-y-4 shadow-xl">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -1892,48 +2551,63 @@ export default function App() {
                       <h3 className="text-sm font-black text-white flex items-center gap-2 flex-wrap">
                         <span>60-Second Master Fix: Resolve All Headers in 1 File</span>
                         <span className="text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/25 px-2 py-0.5 rounded-full">
-                          Recommended
+                          {activePlanPolicy.features.aiFixDoctor ? 'Recommended' : 'Pro Security'}
                         </span>
                       </h3>
                       <p className="text-xs text-slate-400">
-                        Paste this single configuration snippet into your repository to harden all web headers instantly:
+                        {activePlanPolicy.features.aiFixDoctor
+                          ? 'Paste this single configuration snippet into your repository to harden all web headers instantly:'
+                          : 'Copy-paste Master Header remediation packs for Vercel, Next.js & Express unlock on Pro Security ($15/mo) and Team & Agency.'}
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1 bg-[#050811] p-1 rounded-xl border border-white/10 text-xs shrink-0">
-                    {(['vercel', 'nextjs', 'express'] as const).map((tab) => (
-                      <button
-                        key={tab}
-                        onClick={() => setMasterTab(tab)}
-                        className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
-                          masterTab === tab ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {tab === 'vercel' ? 'Vercel' : tab === 'nextjs' ? 'Next.js' : 'Node/Express'}
-                      </button>
-                    ))}
-                  </div>
+                  {activePlanPolicy.features.aiFixDoctor ? (
+                    <div className="flex items-center gap-1 bg-[#050811] p-1 rounded-xl border border-white/10 text-xs shrink-0">
+                      {(['vercel', 'nextjs', 'express'] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          onClick={() => setMasterTab(tab)}
+                          className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                            masterTab === tab ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {tab === 'vercel' ? 'Vercel' : tab === 'nextjs' ? 'Next.js' : 'Node/Express'}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={openPricingPage}
+                      className="px-3.5 py-2 rounded-xl text-xs font-extrabold bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 hover:brightness-110 transition-all inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>Unlock Master Fix</span>
+                    </button>
+                  )}
                 </div>
 
-                <div className="rounded-2xl border border-white/10 bg-[#050811] overflow-hidden text-xs">
-                  <div className="flex items-center justify-between px-4 py-2.5 bg-white/[0.04] border-b border-white/10">
-                    <div className="flex items-center gap-2 text-slate-300 font-mono text-[11px]">
-                      <Code2 className="w-4 h-4 text-emerald-400" />
-                      <span>{masterCodes[masterTab].filename}</span>
+                {activePlanPolicy.features.aiFixDoctor && (
+                  <div className="rounded-2xl border border-white/10 bg-[#050811] overflow-hidden text-xs">
+                    <div className="flex items-center justify-between px-4 py-2.5 bg-white/[0.04] border-b border-white/10">
+                      <div className="flex items-center gap-2 text-slate-300 font-mono text-[11px]">
+                        <Code2 className="w-4 h-4 text-emerald-400" />
+                        <span>{masterCodes[masterTab].filename}</span>
+                      </div>
+                      <button
+                        onClick={() => handleCopyMaster(masterCodes[masterTab].code)}
+                        className="flex items-center gap-1.5 text-xs font-bold text-emerald-300 hover:text-emerald-200 transition-colors bg-emerald-500/15 px-3 py-1 rounded-lg border border-emerald-500/30 cursor-pointer"
+                      >
+                        {masterCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        {masterCopied ? 'Copied!' : 'Copy Config'}
+                      </button>
                     </div>
-                    <button
-                      onClick={() => handleCopyMaster(masterCodes[masterTab].code)}
-                      className="flex items-center gap-1.5 text-xs font-bold text-emerald-300 hover:text-emerald-200 transition-colors bg-emerald-500/15 px-3 py-1 rounded-lg border border-emerald-500/30 cursor-pointer"
-                    >
-                      {masterCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      {masterCopied ? 'Copied!' : 'Copy Config'}
-                    </button>
+                    <pre className="p-4 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed select-all max-h-48">
+                      {masterCodes[masterTab].code}
+                    </pre>
                   </div>
-                  <pre className="p-4 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed select-all max-h-48">
-                    {masterCodes[masterTab].code}
-                  </pre>
-                </div>
+                )}
               </div>
             )}
 
@@ -1958,7 +2632,13 @@ export default function App() {
                       : 'text-slate-400 hover:text-slate-200 bg-white/[0.03] border border-white/5'
                   }`}
                 >
-                  Passed Checks ({report.summaryCounts.pass})
+                  {(() => {
+                    const passAndInfoCount = report.findings.filter(
+                      (f) => f.severity === 'PASS' || f.severity === 'INFO'
+                    ).length;
+                    const hasInfo = report.findings.some((f) => f.severity === 'INFO');
+                    return `${hasInfo ? 'Passed & Info' : 'Passed Checks'} (${passAndInfoCount})`;
+                  })()}
                 </button>
                 <button
                   onClick={() => setFilter('all')}
@@ -1987,9 +2667,33 @@ export default function App() {
                     detectedTech={report.telemetry?.detectedTech}
                     targetUrl={report.targetUrl}
                     defaultExpanded={idx < 2}
+                    canUseAiFixDoctor={activePlanPolicy.features.aiFixDoctor}
+                    onRequestUpgrade={openPricingPage}
                   />
                 ))
               )}
+            </div>
+
+            {/* ── Enterprise Automated Audit Disclaimer (Screen + PDF Export) ── */}
+            <div className="glass-card rounded-2xl border border-white/10 p-4 sm:p-5 text-[11px] text-slate-400 leading-relaxed space-y-1.5 print:break-inside-avoid">
+              <div className="flex items-center gap-2 text-slate-200 font-extrabold uppercase tracking-wider text-[10px]">
+                <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span>Automated Point-in-Time Security Assessment Disclaimer</span>
+              </div>
+              <p>
+                This report reflects automated static analysis and non-destructive passive/safe dynamic checks performed by{' '}
+                <strong className="text-slate-300">CheckMyAPK.com</strong> at{' '}
+                <span className="font-mono text-slate-300">{report.scanTimestamp}</span>. Items labeled{' '}
+                <span className="text-emerald-300 font-bold">Confirmed</span> were verified via live HTTP/TLS/DNS telemetry,
+                read-only probes, or manifest/bytecode structure; items labeled{' '}
+                <span className="text-amber-300 font-bold">Heuristic • Verify Context</span> use static pattern matching and
+                may require engineer review for upstream sanitizers, WAF rules, or API/HTTP-referrer restrictions.
+              </p>
+              <p className="text-slate-500">
+                Automated scanners cannot detect every server-side or business-logic flaw and are not a substitute for an
+                authorized manual penetration test or formal compliance audit (SOC 2 / ISO 27001). Always assess only domains
+                and applications you own or have explicit authorization to test.
+              </p>
             </div>
           </div>
         )}
@@ -2027,46 +2731,61 @@ export default function App() {
       {showTrustModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 no-print">
           <div className="glass-panel rounded-3xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden border border-white/15">
-            <div className="p-4 border-b border-white/10 flex items-center justify-between bg-[#080c17]">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-emerald-400" />
-                <h3 className="text-sm font-black text-white">
-                  {showTrustModal === 'privacy'
-                    ? 'Zero-Retention Privacy & Authorized Security Policy'
-                    : '4-Stage CheckMyAPK Audit Methodology'}
+            <div className="p-4 border-b border-white/10 flex items-center justify-between gap-2 bg-[#080c17]">
+              <div className="flex items-center gap-2 min-w-0">
+                <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
+                <h3 className="text-sm font-black text-white truncate">
+                  {showTrustModal === 'methodology'
+                    ? '4-Stage CheckMyAPK Audit Methodology'
+                    : LEGAL_DOCS_BY_ID[showTrustModal].title}
                 </h3>
               </div>
-              <button
-                onClick={() => setShowTrustModal(null)}
-                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {showTrustModal !== 'methodology' && (
+                  <div className="hidden sm:inline-flex items-center gap-1 p-0.5 rounded-lg bg-white/5 border border-white/10 text-[10px]">
+                    {(
+                      [
+                        { id: 'privacy', label: 'Privacy' },
+                        { id: 'terms', label: 'Terms' },
+                        { id: 'refund', label: 'Refund' },
+                      ] as const
+                    ).map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => openTrustModal(tab.id)}
+                        className={`px-2 py-0.5 rounded-md font-bold cursor-pointer transition-colors ${
+                          showTrustModal === tab.id
+                            ? 'bg-cyan-500/25 text-cyan-200'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={closeTrustModal}
+                  className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="p-6 space-y-4 text-xs text-slate-300 overflow-y-auto leading-relaxed">
-              {showTrustModal === 'privacy' ? (
+              {showTrustModal !== 'methodology' ? (
                 <>
-                  <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 space-y-1.5">
-                    <h4 className="font-black text-emerald-300 flex items-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4" />
-                      100% RAM-Only Sandbox (Zero Disk Retention)
-                    </h4>
-                    <p>
-                      Uploaded <code className="text-white">.apk</code> files are processed strictly in volatile server memory using Multer memory buffers. CheckMyAPK never writes your APK binary to permanent disk storage, never shares source builds, and immediately discards memory buffers once your report returns.
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-1.5">
-                    <h4 className="font-black text-white">Cryptographic Integrity (SHA-256)</h4>
-                    <p>
-                      Every APK audit generates the binary&apos;s SHA-256 fingerprint so you can prove which exact release build passed verification.
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-1.5">
-                    <h4 className="font-black text-amber-300">Authorized Use Only</h4>
-                    <p>
-                      Only audit mobile apps and web endpoints that you own or have explicit permission to evaluate. Automated SSRF guards block private network probes in production environments.
-                    </p>
-                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Effective: {LEGAL_DOCS_BY_ID[showTrustModal].effectiveDate} •{' '}
+                    {LEGAL_DOCS_BY_ID[showTrustModal].subtitle}
+                  </p>
+                  {LEGAL_DOCS_BY_ID[showTrustModal].sections.map((sec) => (
+                    <div key={sec.title} className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-1.5">
+                      <h4 className="font-black text-white">{sec.title}</h4>
+                      <p>{sec.body}</p>
+                    </div>
+                  ))}
                 </>
               ) : (
                 <>
@@ -2095,23 +2814,45 @@ export default function App() {
         </div>
       )}
 
+      {authModalMode && (
+        <AuthModal
+          initialMode={authModalMode}
+          onClose={() => setAuthModalMode(null)}
+          onSuccess={(user) => setCurrentUser(user)}
+        />
+      )}
+
       {/* ── Premium Footer ── */}
       <footer className="py-6 px-6 border-t border-white/[0.06] bg-[#04060c]/60 backdrop-blur-md text-center text-xs text-slate-400 relative z-10 no-print">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
           <span className="font-bold text-slate-300">
             CheckMyAPK<span className="text-cyan-400">.com</span> — AI App &amp; Web Security Scanner
           </span>
-          <div className="flex items-center gap-4 text-[11px] font-semibold">
+          <div className="flex flex-wrap items-center justify-center gap-4 text-[11px] font-semibold">
             <button
               type="button"
-              onClick={() => setShowTrustModal('privacy')}
+              onClick={() => openTrustModal('privacy')}
               className="text-emerald-300/90 hover:text-emerald-200 cursor-pointer"
             >
-              Zero-Retention Privacy
+              Privacy Policy
             </button>
             <button
               type="button"
-              onClick={() => setShowTrustModal('methodology')}
+              onClick={() => openTrustModal('terms')}
+              className="text-slate-300 hover:text-white cursor-pointer"
+            >
+              Terms of Service
+            </button>
+            <button
+              type="button"
+              onClick={() => openTrustModal('refund')}
+              className="text-amber-300/90 hover:text-amber-200 cursor-pointer"
+            >
+              Refund Policy
+            </button>
+            <button
+              type="button"
+              onClick={() => openTrustModal('methodology')}
               className="text-cyan-300/90 hover:text-cyan-200 cursor-pointer"
             >
               4-Stage Methodology

@@ -1,538 +1,587 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Compass } from 'lucide-react';
-
-interface Particle {
-  x: number;
-  y: number;
-  z: number;
-  baseX: number;
-  baseY: number;
-  size: number;
-  hue: 'cyan' | 'purple' | 'emerald';
-  pulseOffset: number;
-}
-
-interface Shockwave {
-  x: number;
-  y: number;
-  radius: number;
-  maxRadius: number;
-  alpha: number;
-  color: string;
-}
+import React, { useEffect, useRef } from 'react';
 
 interface CyberBackgroundProps {
   accentMode?: 'web' | 'apk';
+  theme?: 'dark' | 'light';
 }
 
-export const CyberBackground: React.FC<CyberBackgroundProps> = ({ accentMode = 'apk' }) => {
+interface Joint {
+  x: number;
+  y: number;
+}
+
+interface RibbonTentacle {
+  joints: Joint[];
+  segLen: number;
+  baseAngleOffset: number;
+  anchorRadius: number;
+  waveFreq: number;
+  waveAmp: number;
+  phase: number;
+  thickness: number;
+  colorStop: number;
+}
+
+interface PlanktonSpore {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  size: number;
+  phase: number;
+  wake: number; // 0..1 excitation when touched by cursor or creature
+}
+
+interface CoreNode {
+  orbitR: number;
+  angle: number;
+  speed: number;
+  wobblePhase: number;
+  x: number;
+  y: number;
+}
+
+const APK_PALETTE: ReadonlyArray<[number, number, number]> = [
+  [34, 211, 238],  // Electric Cyan
+  [129, 140, 248], // Neon Indigo
+  [192, 132, 252], // Bioluminescent Violet
+  [244, 114, 182], // Plasma Magenta
+  [52, 211, 153],  // Cyber Emerald
+];
+
+const WEB_PALETTE: ReadonlyArray<[number, number, number]> = [
+  [34, 211, 238],  // Electric Cyan
+  [16, 185, 129],  // Emerald
+  [56, 189, 248],  // Cerulean Sky
+  [45, 212, 191],  // Teal Mint
+  [167, 139, 250], // Soft Violet
+];
+
+const LIGHT_APK_PALETTE: ReadonlyArray<[number, number, number]> = [
+  [2, 132, 199],   // Deep Sky Cyan
+  [79, 70, 229],   // Crisp Indigo
+  [124, 58, 237],  // Royal Violet
+  [219, 39, 119],  // Rich Magenta
+  [5, 150, 105],   // Deep Emerald
+];
+
+const LIGHT_WEB_PALETTE: ReadonlyArray<[number, number, number]> = [
+  [2, 132, 199],   // Deep Sky Cyan
+  [5, 150, 105],   // Deep Emerald
+  [37, 99, 235],   // Cobalt Blue
+  [13, 148, 136],  // Rich Teal
+  [109, 40, 217],  // Crisp Violet
+];
+
+function samplePalette(
+  palette: ReadonlyArray<[number, number, number]>,
+  tNorm: number
+): [number, number, number] {
+  const wrapped = ((tNorm % 1) + 1) % 1;
+  const scaled = wrapped * palette.length;
+  const idx = Math.floor(scaled) % palette.length;
+  const nextIdx = (idx + 1) % palette.length;
+  const frac = scaled - Math.floor(scaled);
+  const c1 = palette[idx];
+  const c2 = palette[nextIdx];
+  return [
+    Math.round(c1[0] + (c2[0] - c1[0]) * frac),
+    Math.round(c1[1] + (c2[1] - c1[1]) * frac),
+    Math.round(c1[2] + (c2[2] - c1[2]) * frac),
+  ];
+}
+
+/**
+ * Unique Living Neural Medusa / Cyber-Organism Backdrop:
+ * 1) Articulated Silk Ribbons: 12 multi-jointed translucent tendrils that flex & swim behind
+ *    a steering head following your cursor arrow with organic inertia.
+ * 2) Harmonic Morphing Membranes: 3 breathing Fourier-spline shells + rotating neural synapse
+ *    constellation inside the living core.
+ * 3) Reactive Ecosystem Spores: Floating plankton spores that awaken, streak along the wake,
+ *    and link with faint neural filaments as the organism glides past.
+ * 4) Click Sonar Pulse: Clicking emits a living sonar wave and ripples energy down every ribbon.
+ */
+export const CyberBackground: React.FC<CyberBackgroundProps> = ({ accentMode = 'apk', theme = 'dark' }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const accentModeRef = useRef<'web' | 'apk'>(accentMode);
+  const themeRef = useRef<'dark' | 'light'>(theme);
 
-  // Track which arrow keys are currently held down (via keyboard OR on-screen HUD)
-  const keysPressedRef = useRef<Record<string, boolean>>({
-    ArrowUp: false,
-    ArrowDown: false,
-    ArrowLeft: false,
-    ArrowRight: false,
-  });
-
-  const [activeKeys, setActiveKeys] = useState<Record<string, boolean>>({
-    ArrowUp: false,
-    ArrowDown: false,
-    ArrowLeft: false,
-    ArrowRight: false,
-  });
-
-  const [vectorHud, setVectorHud] = useState<{ speed: string; direction: string }>({
-    speed: '1.0x',
-    direction: 'CRUISE',
-  });
-
-  const accentModeRef = useRef(accentMode);
   useEffect(() => {
     accentModeRef.current = accentMode;
   }, [accentMode]);
 
   useEffect(() => {
+    themeRef.current = theme;
+  }, [theme]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
 
-    let animationFrameId: number;
+    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let prefersReducedMotion = reducedMotionQuery.matches;
+
     let width = window.innerWidth;
     let height = window.innerHeight;
+    let rafId = 0;
 
-    const resize = () => {
+    const resizeCanvas = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       width = window.innerWidth;
       height = window.innerHeight;
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
-    resize();
-    window.addEventListener('resize', resize);
 
-    // Kinetic physics state controlled by Arrow Keys & Mouse
-    const physics = {
+    resizeCanvas();
+    const isCompact = width < 768;
+
+    // Living creature head & cursor tracking state
+    const creature = {
+      x: width * 0.24,
+      y: height * 0.34,
       vx: 0,
       vy: 0,
-      vz: 1.6, // Ambient forward flow
-      targetVx: 0,
-      targetVy: 0,
-      targetVz: 1.6,
-      gridOffsetZ: 0,
-      gridOffsetX: 0,
-      bankAngle: 0,
-      mouseX: width / 2,
-      mouseY: height / 2,
+      heading: 0,
+      targetX: width * 0.5,
+      targetY: height * 0.36,
       mouseActive: false,
+      lastMoveAt: 0,
+      pulse: 0,
+      pulseX: width * 0.5,
+      pulseY: height * 0.36,
+      pulseRadius: 0,
+      pulseAlpha: 0,
     };
 
-    const shockwaves: Shockwave[] = [];
-
-    const spawnShockwave = (dirKey: string) => {
-      const colorMap: Record<string, string> = {
-        ArrowUp: '6, 182, 212',     // Cyan
-        ArrowDown: '16, 185, 129',  // Emerald
-        ArrowLeft: '168, 85, 247',  // Purple
-        ArrowRight: '56, 189, 248', // Sky
-      };
-      shockwaves.push({
-        x: width / 2,
-        y: height / 2,
-        radius: 20,
-        maxRadius: Math.max(width, height) * 0.65,
-        alpha: 0.42,
-        color: colorMap[dirKey] || '6, 182, 212',
-      });
-    };
-
-    // Create 3D particles
-    const PARTICLE_COUNT = 120;
-    const DEPTH = 1200;
-    const particles: Particle[] = Array.from({ length: PARTICLE_COUNT }, (_, i) => {
-      const hues: Array<'cyan' | 'purple' | 'emerald'> = ['cyan', 'cyan', 'purple', 'emerald'];
-      const x = (Math.random() - 0.5) * width * 2.2;
-      const y = (Math.random() - 0.5) * height * 2.2;
+    // 1) Articulated silk tentacle ribbons
+    const RIBBON_COUNT = isCompact ? 7 : 12;
+    const JOINTS_PER_RIBBON = isCompact ? 16 : 22;
+    const ribbons: RibbonTentacle[] = Array.from({ length: RIBBON_COUNT }, (_, i) => {
+      const spread = (i / Math.max(1, RIBBON_COUNT - 1)) - 0.5; // -0.5 .. +0.5
+      const segLen = (isCompact ? 9.5 : 13) + (i % 3) * 2.2;
+      const startAngle = Math.PI + spread * 1.45;
       return {
-        x,
-        y,
-        z: Math.random() * DEPTH + 100,
-        baseX: x,
-        baseY: y,
-        size: Math.random() * 2 + 1.2,
-        hue: hues[i % hues.length],
-        pulseOffset: Math.random() * Math.PI * 2,
+        joints: Array.from({ length: JOINTS_PER_RIBBON }, (__, j) => ({
+          x: creature.x + Math.cos(startAngle) * j * segLen,
+          y: creature.y + Math.sin(startAngle) * j * segLen,
+        })),
+        segLen,
+        baseAngleOffset: spread * 1.55,
+        anchorRadius: (isCompact ? 16 : 24) + (i % 2) * 8,
+        waveFreq: 2.1 + (i % 4) * 0.35,
+        waveAmp: 0.22 + Math.abs(spread) * 0.28,
+        phase: i * 0.72,
+        thickness: 2.2 - Math.abs(spread) * 0.7,
+        colorStop: i / RIBBON_COUNT,
       };
     });
 
-    // Keyboard Arrow Key Handlers
-    const updateHudFromKeys = () => {
-      const k = keysPressedRef.current;
-      setActiveKeys({ ...k });
+    // 2) Rotating internal neural synapse constellation nodes
+    const CORE_NODE_COUNT = isCompact ? 10 : 16;
+    const coreNodes: CoreNode[] = Array.from({ length: CORE_NODE_COUNT }, (_, i) => ({
+      orbitR: 0.35 + ((i * 37) % 100) / 145,
+      angle: (i / CORE_NODE_COUNT) * Math.PI * 2,
+      speed: (i % 2 === 0 ? 1 : -1) * (0.35 + (i % 5) * 0.12),
+      wobblePhase: i * 1.13,
+      x: creature.x,
+      y: creature.y,
+    }));
 
-      const activeDirs: string[] = [];
-      if (k.ArrowUp) activeDirs.push('THRUST');
-      if (k.ArrowDown) activeDirs.push('REVERSE');
-      if (k.ArrowLeft) activeDirs.push('PORT');
-      if (k.ArrowRight) activeDirs.push('STARBOARD');
+    // 3) Reactive ecosystem plankton spores
+    const SPORE_COUNT = isCompact ? 80 : 170;
+    const spores: PlanktonSpore[] = Array.from({ length: SPORE_COUNT }, () => ({
+      x: Math.random() * width,
+      y: Math.random() * height,
+      vx: (Math.random() - 0.5) * 0.32,
+      vy: (Math.random() - 0.5) * 0.32,
+      size: 0.9 + Math.random() * 1.45,
+      phase: Math.random() * Math.PI * 2,
+      wake: 0,
+    }));
 
-      const boostActive = k.ArrowUp || k.ArrowDown || k.ArrowLeft || k.ArrowRight;
-      setVectorHud({
-        speed: k.ArrowUp ? '4.8x' : k.ArrowDown ? '-3.2x' : boostActive ? '2.6x' : '1.0x',
-        direction: activeDirs.length > 0 ? activeDirs.join(' + ') : 'CRUISE',
-      });
-    };
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
-      const activeTag = document.activeElement?.tagName;
-      if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
-
-      if (!keysPressedRef.current[e.key]) {
-        keysPressedRef.current[e.key] = true;
-        spawnShockwave(e.key);
-        updateHudFromKeys();
-      }
-    };
-
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
-      if (keysPressedRef.current[e.key]) {
-        keysPressedRef.current[e.key] = false;
-        updateHudFromKeys();
+    const handleResize = () => {
+      resizeCanvas();
+      for (let i = 0; i < spores.length; i++) {
+        spores[i].x = Math.min(width, Math.max(0, spores[i].x));
+        spores[i].y = Math.min(height, Math.max(0, spores[i].y));
       }
     };
 
     const handleMouseMove = (e: MouseEvent) => {
-      physics.mouseX = e.clientX;
-      physics.mouseY = e.clientY;
-      physics.mouseActive = true;
+      creature.mouseActive = true;
+      creature.lastMoveAt = performance.now();
+      creature.targetX = e.clientX;
+      creature.targetY = e.clientY;
+    };
+
+    const handleMouseDown = (e: MouseEvent) => {
+      creature.mouseActive = true;
+      creature.lastMoveAt = performance.now();
+      creature.targetX = e.clientX;
+      creature.targetY = e.clientY;
+      creature.pulse = 1.0;
+      creature.pulseX = creature.x;
+      creature.pulseY = creature.y;
+      creature.pulseRadius = 18;
+      creature.pulseAlpha = 0.55;
     };
 
     const handleMouseLeave = () => {
-      physics.mouseActive = false;
+      creature.mouseActive = false;
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseleave', handleMouseLeave);
-
-    // Expose global trigger for on-screen D-pad HUD buttons
-    (window as any).__triggerArrowKey = (key: string, pressed: boolean) => {
-      const prev = keysPressedRef.current[key];
-      keysPressedRef.current[key] = pressed;
-      if (pressed && !prev) {
-        spawnShockwave(key);
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length > 0) {
+        creature.mouseActive = true;
+        creature.lastMoveAt = performance.now();
+        creature.targetX = e.touches[0].clientX;
+        creature.targetY = e.touches[0].clientY;
       }
-      updateHudFromKeys();
     };
 
-    let time = 0;
-
-    const render = () => {
-      time += 0.016;
-      const k = keysPressedRef.current;
-
-      // Compute target velocities from held Arrow Keys
-      physics.targetVz = k.ArrowUp ? 14.5 : k.ArrowDown ? -10.5 : 1.5;
-      physics.targetVx = (k.ArrowLeft ? 10.0 : 0) + (k.ArrowRight ? -10.0 : 0);
-      physics.targetVy = (k.ArrowUp ? 2.5 : 0) + (k.ArrowDown ? -2.5 : 0);
-
-      // Smooth inertial damping (buttery 60fps easing)
-      physics.vz += (physics.targetVz - physics.vz) * 0.08;
-      physics.vx += (physics.targetVx - physics.vx) * 0.08;
-      physics.vy += (physics.targetVy - physics.vy) * 0.08;
-
-      const targetBank = (k.ArrowLeft ? -0.05 : 0) + (k.ArrowRight ? 0.05 : 0);
-      physics.bankAngle += (targetBank - physics.bankAngle) * 0.08;
-
-      // Deep space / obsidian cyber backdrop
-      ctx.fillStyle = '#04060c';
-      ctx.fillRect(0, 0, width, height);
-
-      // Ambient Aurora Gradient Glows (Subtle cyan & purple/emerald)
-      const isApk = accentModeRef.current === 'apk';
-      const primaryRgb = isApk ? '168, 85, 247' : '6, 182, 212';
-      const secondaryRgb = isApk ? '6, 182, 212' : '16, 185, 129';
-
-      const auraX = physics.mouseActive
-        ? width * 0.5 + (physics.mouseX - width * 0.5) * 0.25
-        : width * 0.5 + physics.vx * 18;
-      const auraY = physics.mouseActive
-        ? height * 0.35 + (physics.mouseY - height * 0.35) * 0.25
-        : height * 0.35;
-
-      const bgGrad = ctx.createRadialGradient(auraX, auraY, 10, auraX, auraY, Math.max(width, height) * 0.75);
-      bgGrad.addColorStop(0, `rgba(${primaryRgb}, 0.14)`);
-      bgGrad.addColorStop(0.45, `rgba(${secondaryRgb}, 0.05)`);
-      bgGrad.addColorStop(1, 'rgba(4, 6, 12, 0)');
-      ctx.fillStyle = bgGrad;
-      ctx.fillRect(0, 0, width, height);
-
-      // ── 1. 3D Perspective Cyber Floor Grid ──
-      physics.gridOffsetZ = (physics.gridOffsetZ + physics.vz * 1.4) % 80;
-      if (physics.gridOffsetZ < 0) physics.gridOffsetZ += 80;
-      physics.gridOffsetX = (physics.gridOffsetX + physics.vx * 1.8) % 120;
-
-      const horizonY = height * 0.54 + (physics.vy * 8);
-      const fov = 420;
-
-      ctx.save();
-      ctx.translate(width / 2, height / 2);
-      ctx.rotate(physics.bankAngle);
-      ctx.translate(-width / 2, -height / 2);
-
-      // Draw perspective horizon grid lines
-      ctx.lineWidth = 1;
-      const numVerticalLines = 22;
-      for (let i = -numVerticalLines; i <= numVerticalLines; i++) {
-        const worldX = i * 160 + physics.gridOffsetX;
-        const x1 = width / 2 + (worldX * fov) / 1400;
-        const y1 = horizonY;
-        const x2 = width / 2 + (worldX * fov) / 120;
-        const y2 = height + 180;
-
-        const grad = ctx.createLinearGradient(x1, y1, x2, y2);
-        grad.addColorStop(0, `rgba(${primaryRgb}, 0)`);
-        grad.addColorStop(0.35, `rgba(${primaryRgb}, 0.14)`);
-        grad.addColorStop(1, `rgba(${secondaryRgb}, 0.25)`);
-        ctx.strokeStyle = grad;
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
+    const handleReducedMotionChange = (e: MediaQueryListEvent) => {
+      prefersReducedMotion = e.matches;
+      if (prefersReducedMotion) {
+        cancelAnimationFrame(rafId);
+        renderFrame(performance.now(), true);
+      } else {
+        rafId = requestAnimationFrame(loop);
       }
+    };
 
-      // Horizontal depth lines moving toward camera
-      for (let zStep = 120; zStep < 1400; zStep += 80) {
-        const z = zStep - physics.gridOffsetZ;
-        if (z <= 40) continue;
-        const scale = fov / z;
-        const y = horizonY + 210 * scale;
-        if (y > height + 100 || y < horizonY) continue;
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
+    window.addEventListener('mousedown', handleMouseDown, { passive: true });
+    document.addEventListener('mouseleave', handleMouseLeave);
+    window.addEventListener('touchmove', handleTouchMove, { passive: true });
+    reducedMotionQuery.addEventListener('change', handleReducedMotionChange);
 
-        const alpha = Math.min(0.28, (1 - z / 1400) * 0.35);
-        ctx.strokeStyle = `rgba(${secondaryRgb}, ${alpha})`;
-        ctx.beginPath();
-        ctx.moveTo(-200, y);
-        ctx.lineTo(width + 200, y);
-        ctx.stroke();
+    const drawMorphingMembrane = (
+      cx: number,
+      cy: number,
+      baseR: number,
+      t: number,
+      shellIdx: number,
+      strokeStyle: string,
+      lineWidth: number
+    ) => {
+      const steps = 64;
+      ctx.beginPath();
+      for (let s = 0; s <= steps; s++) {
+        const a = (s / steps) * Math.PI * 2;
+        const harmonic =
+          1 +
+          0.11 * Math.sin(a * 3 + t * (1.2 + shellIdx * 0.2) + shellIdx * 1.7) +
+          0.065 * Math.cos(a * 5 - t * 0.95 + shellIdx) +
+          0.035 * Math.sin(a * 2 + creature.heading);
+        const r = baseR * harmonic;
+        // Slight teardrop elongation in swimming direction
+        const forwardPull = Math.cos(a - creature.heading) * (baseR * 0.12);
+        const px = cx + Math.cos(a) * (r + forwardPull);
+        const py = cy + Math.sin(a) * (r + forwardPull);
+        if (s === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
       }
+      ctx.closePath();
+      ctx.strokeStyle = strokeStyle;
+      ctx.lineWidth = lineWidth;
+      ctx.stroke();
+    };
 
-      // ── 2. Projected 3D Neural Particles & Warp Trails ──
-      const projectedPoints: Array<{ px: number; py: number; z: number; alpha: number; colorRgb: string }> = [];
-      const parallaxX = physics.mouseActive ? (physics.mouseX - width / 2) * 0.04 : 0;
-      const parallaxY = physics.mouseActive ? (physics.mouseY - height / 2) * 0.04 : 0;
+    const renderFrame = (nowMs: number, staticOnly = false) => {
+      const t = nowMs * 0.001;
+      ctx.clearRect(0, 0, width, height);
 
-      for (const p of particles) {
-        p.z -= physics.vz;
-        p.x += physics.vx * (1.2 - p.z / DEPTH);
-        p.y += physics.vy * (1.2 - p.z / DEPTH);
+      const minDim = Math.min(width, height);
+      const compact = width < 768;
+      const isLight = themeRef.current === 'light';
+      const palette = isLight
+        ? (accentModeRef.current === 'web' ? LIGHT_WEB_PALETTE : LIGHT_APK_PALETTE)
+        : (accentModeRef.current === 'web' ? WEB_PALETTE : APK_PALETTE);
 
-        // Wrap Z depth seamlessly
-        if (p.z <= 40) {
-          p.z = DEPTH;
-          p.x = (Math.random() - 0.5) * width * 2.2;
-          p.y = (Math.random() - 0.5) * height * 2.2;
-        } else if (p.z > DEPTH) {
-          p.z = 50;
-          p.x = (Math.random() - 0.5) * width * 2.2;
-          p.y = (Math.random() - 0.5) * height * 2.2;
+      // Autonomous graceful patrol orbit around hero area when cursor rests > 3.2s
+      const isIdle = !creature.mouseActive || nowMs - creature.lastMoveAt > 3200;
+      const goalX = isIdle
+        ? width * 0.5 + Math.sin(t * 0.42) * Math.min(width * 0.28, 320)
+        : creature.targetX;
+      const goalY = isIdle
+        ? height * 0.36 + Math.sin(t * 0.84) * Math.min(height * 0.14, 110)
+        : creature.targetY;
+
+      if (!staticOnly) {
+        // Spring-smooth swimming kinematics
+        const dx = goalX - creature.x;
+        const dy = goalY - creature.y;
+        const dist = Math.hypot(dx, dy);
+
+        // Gentle orbital hover right around cursor instead of dead-stopping stiffly
+        const hoverOffsetX = isIdle ? 0 : Math.cos(t * 1.4) * 14;
+        const hoverOffsetY = isIdle ? 0 : Math.sin(t * 1.4) * 14;
+
+        const pullStrength = dist > 6 ? 0.036 : 0.014;
+        creature.vx = creature.vx * 0.86 + (dx + hoverOffsetX) * pullStrength;
+        creature.vy = creature.vy * 0.86 + (dy + hoverOffsetY) * pullStrength;
+        creature.x += creature.vx;
+        creature.y += creature.vy;
+
+        const speed = Math.hypot(creature.vx, creature.vy);
+        if (speed > 0.25) {
+          const desiredHeading = Math.atan2(creature.vy, creature.vx);
+          const angleDiff = Math.atan2(
+            Math.sin(desiredHeading - creature.heading),
+            Math.cos(desiredHeading - creature.heading)
+          );
+          creature.heading += angleDiff * 0.14;
         }
 
-        // Wrap lateral X/Y boundaries seamlessly
-        const boundX = width * 1.4;
-        const boundY = height * 1.4;
-        if (p.x > boundX) p.x = -boundX;
-        if (p.x < -boundX) p.x = boundX;
-        if (p.y > boundY) p.y = -boundY;
-        if (p.y < -boundY) p.y = boundY;
+        creature.pulse *= 0.94;
+        if (creature.pulseAlpha > 0.005) {
+          creature.pulseRadius += 5.5;
+          creature.pulseAlpha *= 0.94;
+        }
+      }
 
-        const scale = fov / (fov + p.z);
-        const px = width / 2 + (p.x - parallaxX * 4) * scale;
-        const py = height / 2 + (p.y - parallaxY * 4) * scale;
+      const swimSpeed = Math.hypot(creature.vx, creature.vy);
+      const coreR = (compact ? minDim * 0.095 : Math.min(minDim * 0.095, 76)) * (1 + creature.pulse * 0.28);
 
-        if (px < -100 || px > width + 100 || py < -100 || py > height + 100) continue;
+      // 0) Soft bioluminescent aura halo & click sonar wave
+      const [hR, hG, hB] = samplePalette(palette, t * 0.04);
+      const auraGrad = ctx.createRadialGradient(
+        creature.x,
+        creature.y,
+        0,
+        creature.x,
+        creature.y,
+        coreR * 3.8
+      );
+      auraGrad.addColorStop(0, `rgba(${hR}, ${hG}, ${hB}, ${isLight ? '0.09' : '0.11'})`);
+      auraGrad.addColorStop(0.45, `rgba(${hR}, ${hG}, ${hB}, 0.04)`);
+      auraGrad.addColorStop(1, isLight ? 'rgba(248, 250, 252, 0)' : 'rgba(4, 6, 12, 0)');
+      ctx.fillStyle = auraGrad;
+      ctx.beginPath();
+      ctx.arc(creature.x, creature.y, coreR * 3.8, 0, Math.PI * 2);
+      ctx.fill();
 
-        const pulse = 0.75 + 0.25 * Math.sin(time * 2.5 + p.pulseOffset);
-        const alpha = Math.min(0.9, (1 - p.z / DEPTH) * 0.85 * pulse);
+      if (creature.pulseAlpha > 0.01) {
+        ctx.beginPath();
+        ctx.arc(creature.pulseX, creature.pulseY, creature.pulseRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${hR}, ${hG}, ${hB}, ${(creature.pulseAlpha * 0.5).toFixed(3)})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
 
-        const colorRgb =
-          p.hue === 'purple'
-            ? '168, 85, 247'
-            : p.hue === 'emerald'
-            ? '16, 185, 129'
-            : '6, 182, 212';
+      // 1) Update & render reactive plankton spores + slipstream neural links
+      const wakeRadius = coreR * 3.1;
+      for (let i = 0; i < spores.length; i++) {
+        const s = spores[i];
+        const sdx = s.x - creature.x;
+        const sdy = s.y - creature.y;
+        const sDist = Math.hypot(sdx, sdy);
 
-        // Draw warp streak tail when velocity is high (Arrow Up/Down/Left/Right pressed!)
-        const speedMagnitude = Math.abs(physics.vz) + Math.abs(physics.vx);
-        if (speedMagnitude > 3.5) {
-          const prevScale = fov / (fov + p.z + physics.vz * 2.8);
-          const prevPx = width / 2 + (p.x - physics.vx * 2.2 - parallaxX * 4) * prevScale;
-          const prevPy = height / 2 + (p.y - physics.vy * 2.2 - parallaxY * 4) * prevScale;
+        if (!staticOnly) {
+          // Ambient drift
+          s.vx += Math.cos(t * 0.6 + s.phase) * 0.008;
+          s.vy += Math.sin(t * 0.5 + s.phase * 1.3) * 0.008;
 
-          ctx.strokeStyle = `rgba(${colorRgb}, ${alpha * 0.7})`;
-          ctx.lineWidth = Math.max(0.8, p.size * scale * 1.3);
+          // Living slipstream swirl when the creature glides nearby
+          if (sDist > 2 && sDist < wakeRadius) {
+            const proximity = 1 - sDist / wakeRadius;
+            s.wake = Math.min(1, s.wake + proximity * 0.14);
+            const nx = sdx / sDist;
+            const ny = sdy / sDist;
+            // Gentle tangential swirl + outward ripple on click pulse
+            const swirlForce = proximity * (0.14 + swimSpeed * 0.02 + creature.pulse * 0.6);
+            s.vx += (-ny * 0.8 + nx * (0.25 + creature.pulse)) * swirlForce;
+            s.vy += (nx * 0.8 + ny * (0.25 + creature.pulse)) * swirlForce;
+          } else {
+            s.wake *= 0.96;
+          }
+
+          s.vx *= 0.97;
+          s.vy *= 0.97;
+          s.x += s.vx;
+          s.y += s.vy;
+
+          if (s.x < -16) s.x = width + 16;
+          if (s.x > width + 16) s.x = -16;
+          if (s.y < -16) s.y = height + 16;
+          if (s.y > height + 16) s.y = -16;
+        }
+
+        const [sR, sG, sB] = samplePalette(palette, s.phase / (Math.PI * 2) + t * 0.03);
+        const baseAlpha = 0.14 + s.wake * 0.55;
+        ctx.fillStyle = s.wake > 0.15
+          ? `rgba(${sR}, ${sG}, ${sB}, ${baseAlpha.toFixed(3)})`
+          : isLight
+            ? `rgba(71, 85, 105, ${(0.14 + 0.06 * Math.sin(t + s.phase)).toFixed(3)})`
+            : `rgba(148, 163, 184, ${(0.12 + 0.06 * Math.sin(t + s.phase)).toFixed(3)})`;
+
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.size * (1 + s.wake * 0.7), 0, Math.PI * 2);
+        ctx.fill();
+
+        // Delicate neural thread connecting awakened spores to creature membrane
+        if (s.wake > 0.35 && sDist < coreR * 2.2) {
           ctx.beginPath();
-          ctx.moveTo(prevPx, prevPy);
-          ctx.lineTo(px, py);
+          ctx.moveTo(s.x, s.y);
+          ctx.lineTo(
+            creature.x + (sdx / sDist) * (coreR * 0.88),
+            creature.y + (sdy / sDist) * (coreR * 0.88)
+          );
+          ctx.strokeStyle = `rgba(${sR}, ${sG}, ${sB}, ${(s.wake * 0.16).toFixed(3)})`;
+          ctx.lineWidth = 0.75;
+          ctx.stroke();
+        }
+      }
+
+      // 2) Update & render 12 flowing bioluminescent silk ribbons (articulated tendrils)
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      for (let rIdx = 0; rIdx < ribbons.length; rIdx++) {
+        const rib = ribbons[rIdx];
+        const anchorAngle = creature.heading + Math.PI + rib.baseAngleOffset;
+        const anchorX = creature.x + Math.cos(anchorAngle) * (rib.anchorRadius * 0.55);
+        const anchorY = creature.y + Math.sin(anchorAngle) * (rib.anchorRadius * 0.55);
+
+        rib.joints[0].x = anchorX;
+        rib.joints[0].y = anchorY;
+
+        if (!staticOnly) {
+          const pulseTravel = creature.pulse * 0.8;
+          for (let j = 1; j < rib.joints.length; j++) {
+            const prev = rib.joints[j - 1];
+            const curr = rib.joints[j];
+
+            // Swimming lateral undulation propagating from head to tail tip
+            const waveRatio = j / rib.joints.length;
+            const wavePhase = t * rib.waveFreq - j * 0.42 + rib.phase;
+            const waveForce = Math.sin(wavePhase) * (rib.waveAmp + waveRatio * 0.42 + pulseTravel * waveRatio);
+            const perpAngle = anchorAngle + Math.PI * 0.5;
+
+            const targetX = curr.x + Math.cos(perpAngle) * waveForce * 2.2 + Math.cos(anchorAngle) * 0.55;
+            const targetY = curr.y + Math.sin(perpAngle) * waveForce * 2.2 + Math.sin(anchorAngle) * 0.55;
+
+            let jdx = targetX - prev.x;
+            let jdy = targetY - prev.y;
+            let jDist = Math.hypot(jdx, jdy);
+            if (jDist < 0.001) {
+              jdx = Math.cos(anchorAngle);
+              jdy = Math.sin(anchorAngle);
+              jDist = 1;
+            }
+            curr.x = prev.x + (jdx / jDist) * rib.segLen;
+            curr.y = prev.y + (jdy / jDist) * rib.segLen;
+          }
+        }
+
+        // Smooth tapered gradient segments along each ribbon
+        const [rR, rG, rB] = samplePalette(palette, rib.colorStop + t * 0.045);
+        for (let j = 0; j < rib.joints.length - 1; j++) {
+          const p0 = rib.joints[j];
+          const p1 = rib.joints[j + 1];
+          const progress = 1 - j / rib.joints.length;
+          const segAlpha = (0.06 + progress * 0.34 + creature.pulse * 0.16) * (0.75 + 0.25 * Math.sin(t * 2 - j * 0.3 + rib.phase));
+          ctx.beginPath();
+          ctx.moveTo(p0.x, p0.y);
+          ctx.lineTo(p1.x, p1.y);
+          ctx.strokeStyle = `rgba(${rR}, ${rG}, ${rB}, ${Math.min(0.65, segAlpha).toFixed(3)})`;
+          ctx.lineWidth = Math.max(0.45, rib.thickness * progress * 1.15);
           ctx.stroke();
         }
 
-        // Draw luminous particle core
-        ctx.fillStyle = `rgba(${colorRgb}, ${alpha})`;
+        // Tiny glowing bioluminescent tip orb at each tentacle end
+        const tip = rib.joints[rib.joints.length - 1];
+        ctx.fillStyle = `rgba(${rR}, ${rG}, ${rB}, 0.55)`;
         ctx.beginPath();
-        ctx.arc(px, py, Math.max(0.9, p.size * scale * 1.6), 0, Math.PI * 2);
+        ctx.arc(tip.x, tip.y, 1.5, 0, Math.PI * 2);
         ctx.fill();
-
-        projectedPoints.push({ px, py, z: p.z, alpha, colorRgb });
       }
 
-      // ── 3. Neural Constellation Connections (Nodes & Cursor Magnetic Links) ──
-      const maxConnectDist = 140;
-      for (let i = 0; i < projectedPoints.length; i++) {
-        const a = projectedPoints[i];
-        if (a.z > 750) continue;
+      // 3) Render morphing translucent harmonic core membranes
+      for (let shell = 0; shell < 3; shell++) {
+        const [mR, mG, mB] = samplePalette(palette, shell * 0.28 + t * 0.04);
+        const shellR = coreR * (0.56 + shell * 0.26);
+        const shellAlpha = 0.28 - shell * 0.06 + creature.pulse * 0.15;
+        drawMorphingMembrane(
+          creature.x,
+          creature.y,
+          shellR,
+          t,
+          shell,
+          `rgba(${mR}, ${mG}, ${mB}, ${Math.min(0.55, shellAlpha).toFixed(3)})`,
+          1.45 - shell * 0.25
+        );
+      }
 
-        // Connect to nearby nodes
-        for (let j = i + 1; j < projectedPoints.length; j++) {
-          const b = projectedPoints[j];
-          if (b.z > 750) continue;
-          const dx = a.px - b.px;
-          const dy = a.py - b.py;
-          const distSq = dx * dx + dy * dy;
-          if (distSq < maxConnectDist * maxConnectDist) {
-            const lineAlpha = (1 - Math.sqrt(distSq) / maxConnectDist) * Math.min(a.alpha, b.alpha) * 0.25;
-            ctx.strokeStyle = `rgba(${a.colorRgb}, ${lineAlpha})`;
-            ctx.lineWidth = 0.7;
+      // 4) Internal neural synapse constellation inside the living core
+      for (let i = 0; i < coreNodes.length; i++) {
+        const cn = coreNodes[i];
+        const a = cn.angle + t * cn.speed;
+        const r = coreR * 0.62 * cn.orbitR * (1 + 0.15 * Math.sin(t * 1.8 + cn.wobblePhase));
+        cn.x = creature.x + Math.cos(a) * r;
+        cn.y = creature.y + Math.sin(a) * r;
+      }
+
+      for (let i = 0; i < coreNodes.length; i++) {
+        const n1 = coreNodes[i];
+        const [nR, nG, nB] = samplePalette(palette, i / coreNodes.length + t * 0.05);
+        for (let j = i + 1; j < coreNodes.length; j++) {
+          const n2 = coreNodes[j];
+          const nd = Math.hypot(n1.x - n2.x, n1.y - n2.y);
+          if (nd < coreR * 0.72) {
+            const linkAlpha = (1 - nd / (coreR * 0.72)) * 0.26;
             ctx.beginPath();
-            ctx.moveTo(a.px, a.py);
-            ctx.lineTo(b.px, b.py);
+            ctx.moveTo(n1.x, n1.y);
+            ctx.lineTo(n2.x, n2.y);
+            ctx.strokeStyle = `rgba(${nR}, ${nG}, ${nB}, ${linkAlpha.toFixed(3)})`;
+            ctx.lineWidth = 0.8;
             ctx.stroke();
           }
         }
-
-        // Magnetic highlight to cursor
-        if (physics.mouseActive) {
-          const mdx = a.px - physics.mouseX;
-          const mdy = a.py - physics.mouseY;
-          const mDistSq = mdx * mdx + mdy * mdy;
-          if (mDistSq < 180 * 180) {
-            const mAlpha = (1 - Math.sqrt(mDistSq) / 180) * 0.35;
-            ctx.strokeStyle = `rgba(${secondaryRgb}, ${mAlpha})`;
-            ctx.lineWidth = 0.9;
-            ctx.beginPath();
-            ctx.moveTo(a.px, a.py);
-            ctx.lineTo(physics.mouseX, physics.mouseY);
-            ctx.stroke();
-          }
-        }
-      }
-
-      // ── 4. Radial Kinetic Shockwaves on Arrow Press ──
-      for (let i = shockwaves.length - 1; i >= 0; i--) {
-        const sw = shockwaves[i];
-        sw.radius += 16;
-        sw.alpha *= 0.94;
-        ctx.strokeStyle = `rgba(${sw.color}, ${sw.alpha})`;
-        ctx.lineWidth = 2;
+        ctx.fillStyle = `rgba(${nR}, ${nG}, ${nB}, 0.68)`;
         ctx.beginPath();
-        ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
-        ctx.stroke();
-        if (sw.alpha < 0.02 || sw.radius > sw.maxRadius) {
-          shockwaves.splice(i, 1);
-        }
+        ctx.arc(n1.x, n1.y, 1.45, 0, Math.PI * 2);
+        ctx.fill();
       }
-
-      ctx.restore();
-
-      // Subtle vignette to keep center UI crisp
-      const vignette = ctx.createRadialGradient(
-        width / 2,
-        height / 2,
-        Math.min(width, height) * 0.25,
-        width / 2,
-        height / 2,
-        Math.max(width, height) * 0.85
-      );
-      vignette.addColorStop(0, 'rgba(4, 6, 12, 0)');
-      vignette.addColorStop(1, 'rgba(4, 6, 12, 0.65)');
-      ctx.fillStyle = vignette;
-      ctx.fillRect(0, 0, width, height);
-
-      animationFrameId = requestAnimationFrame(render);
     };
 
-    animationFrameId = requestAnimationFrame(render);
+    const loop = (now: number) => {
+      if (document.visibilityState === 'visible') {
+        renderFrame(now, false);
+      }
+      rafId = requestAnimationFrame(loop);
+    };
+
+    if (prefersReducedMotion) {
+      renderFrame(performance.now(), true);
+    } else {
+      rafId = requestAnimationFrame(loop);
+    }
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
-      window.removeEventListener('resize', resize);
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', handleResize);
       window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseleave', handleMouseLeave);
-      delete (window as any).__triggerArrowKey;
+      window.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('mouseleave', handleMouseLeave);
+      window.removeEventListener('touchmove', handleTouchMove);
+      reducedMotionQuery.removeEventListener('change', handleReducedMotionChange);
     };
   }, []);
 
-  const triggerHudKey = (key: string, pressed: boolean) => {
-    if ((window as any).__triggerArrowKey) {
-      (window as any).__triggerArrowKey(key, pressed);
-    }
-  };
-
   return (
-    <>
-      <canvas
-        ref={canvasRef}
-        className="fixed inset-0 pointer-events-none z-0"
-        aria-hidden="true"
-      />
-
-      {/* Interactive Arrow-Key Kinetic D-Pad HUD (Bottom Right) */}
-      <div className="fixed bottom-4 right-4 z-40 hidden sm:flex items-center gap-3 px-3.5 py-2.5 rounded-2xl glass-panel no-print select-none shadow-2xl border border-white/10">
-        <div className="flex flex-col text-left pr-2 border-r border-white/10">
-          <span className="text-[9px] font-extrabold uppercase tracking-widest text-cyan-400 flex items-center gap-1">
-            <Compass className="w-3 h-3 animate-spin" style={{ animationDuration: '8s' }} />
-            Matrix Vector
-          </span>
-          <span className="text-[11px] font-mono font-bold text-white mt-0.5">
-            {vectorHud.direction} <span className="text-emerald-400">{vectorHud.speed}</span>
-          </span>
-          <span className="text-[9px] text-slate-400">Use Arrow Keys ↑↓←→</span>
-        </div>
-
-        {/* Interactive Clickable / Keyboard-Synced Arrow Pad */}
-        <div className="grid grid-cols-3 gap-1 w-20">
-          <div></div>
-          <button
-            type="button"
-            aria-label="Thrust Up"
-            onMouseDown={() => triggerHudKey('ArrowUp', true)}
-            onMouseUp={() => triggerHudKey('ArrowUp', false)}
-            onMouseLeave={() => triggerHudKey('ArrowUp', false)}
-            className={`w-6 h-6 rounded-md flex items-center justify-center border transition-all cursor-pointer ${
-              activeKeys.ArrowUp
-                ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.8)] scale-110'
-                : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <ArrowUp className="w-3 h-3" />
-          </button>
-          <div></div>
-
-          <button
-            type="button"
-            aria-label="Steer Left"
-            onMouseDown={() => triggerHudKey('ArrowLeft', true)}
-            onMouseUp={() => triggerHudKey('ArrowLeft', false)}
-            onMouseLeave={() => triggerHudKey('ArrowLeft', false)}
-            className={`w-6 h-6 rounded-md flex items-center justify-center border transition-all cursor-pointer ${
-              activeKeys.ArrowLeft
-                ? 'bg-purple-500 text-white border-purple-300 shadow-[0_0_12px_rgba(168,85,247,0.8)] scale-110'
-                : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <ArrowLeft className="w-3 h-3" />
-          </button>
-          <button
-            type="button"
-            aria-label="Reverse Down"
-            onMouseDown={() => triggerHudKey('ArrowDown', true)}
-            onMouseUp={() => triggerHudKey('ArrowDown', false)}
-            onMouseLeave={() => triggerHudKey('ArrowDown', false)}
-            className={`w-6 h-6 rounded-md flex items-center justify-center border transition-all cursor-pointer ${
-              activeKeys.ArrowDown
-                ? 'bg-emerald-500 text-slate-950 border-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.8)] scale-110'
-                : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <ArrowDown className="w-3 h-3" />
-          </button>
-          <button
-            type="button"
-            aria-label="Steer Right"
-            onMouseDown={() => triggerHudKey('ArrowRight', true)}
-            onMouseUp={() => triggerHudKey('ArrowRight', false)}
-            onMouseLeave={() => triggerHudKey('ArrowRight', false)}
-            className={`w-6 h-6 rounded-md flex items-center justify-center border transition-all cursor-pointer ${
-              activeKeys.ArrowRight
-                ? 'bg-cyan-400 text-slate-950 border-cyan-200 shadow-[0_0_12px_rgba(56,189,248,0.8)] scale-110'
-                : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <ArrowRight className="w-3 h-3" />
-          </button>
-        </div>
-      </div>
-    </>
+    <div
+      className="fixed inset-0 pointer-events-none z-0 overflow-hidden no-print"
+      aria-hidden="true"
+    >
+      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
+    </div>
   );
 };
-

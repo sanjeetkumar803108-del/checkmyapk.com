@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { AUDIT_HTTPS_AGENT } from './securityGuard.ts';
 
 export interface RateLimitFinding {
   type: string;
@@ -30,6 +31,7 @@ export async function probeRateLimiting(
     requests.push(
       axios.get(targetUrl, {
         timeout: 4000,
+        httpsAgent: AUDIT_HTTPS_AGENT,
         validateStatus: () => true,
         headers: { 'User-Agent': 'CheckMyAPK-RateLimitProbe/1.0 (+https://checkmyapk.com)' }
       }).catch(e => ({ status: 500, error: e.message }))

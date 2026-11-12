@@ -34,6 +34,7 @@ jobEvents.setMaxListeners(100);
 
 interface QueuedTask {
   jobId: string;
+  priority: boolean;
   run: () => Promise<void>;
 }
 
@@ -65,7 +66,9 @@ function updateQueuePositions() {
     const job = jobs.get(item.jobId);
     if (job && job.status === 'queued') {
       job.queuePosition = index + 1;
-      job.currentStage = `Queued behind active scans (position #${index + 1})...`;
+      job.currentStage = item.priority
+        ? `Priority Agency Queue (position #${index + 1})...`
+        : `Queued behind active scans (position #${index + 1})...`;
       jobEvents.emit(item.jobId, job);
     }
   });
@@ -103,7 +106,7 @@ export function getQueueCapacity(): { activeWorkers: number; queuedCount: number
   };
 }
 
-export function createScanJob(kind: 'apk' | 'web', targetName: string): ScanJob {
+export function createScanJob(kind: 'apk' | 'web', targetName: string, priority = false): ScanJob {
   pruneJobs();
   const id = `job_${crypto.randomBytes(8).toString('hex')}`;
   const now = Date.now();
@@ -114,9 +117,16 @@ export function createScanJob(kind: 'apk' | 'web', targetName: string): ScanJob 
     targetName,
     status: 'queued',
     progress: 5,
-    currentStage: pos > 0 ? `Queued in worker pool (position #${pos})...` : 'Queued in CheckMyAPK async worker pipeline...',
+    currentStage:
+      pos > 0
+        ? priority
+          ? `Priority Agency Queue (position #${pos})...`
+          : `Queued in worker pool (position #${pos})...`
+        : priority
+        ? 'Queued in Priority Agency worker lane...'
+        : 'Queued in CheckMyAPK async worker pipeline...',
     queuePosition: pos,
-    logs: [{ time: '[+0.00s]', msg: `Job ${id} queued for ${targetName}` }],
+    logs: [{ time: '[+0.00s]', msg: `Job ${id} queued for ${targetName}${priority ? ' [Priority Agency]' : ''}` }],
     createdAt: now,
     updatedAt: now
   };
@@ -124,11 +134,28 @@ export function createScanJob(kind: 'apk' | 'web', targetName: string): ScanJob 
   return job;
 }
 
-export function enqueueJobTask(jobId: string, taskFn: () => Promise<void>): boolean {
+export function enqueueJobTask(
+  jobId: string,
+  taskFn: () => Promise<void>,
+  opts?: { priority?: boolean }
+): boolean {
   if (activeWorkers >= MAX_CONCURRENT_APK_JOBS && pendingQueue.length >= MAX_QUEUED_APK_JOBS) {
     return false;
   }
-  pendingQueue.push({ jobId, run: taskFn });
+  const priority = Boolean(opts?.priority);
+  const task: QueuedTask = { jobId, priority, run: taskFn };
+  if (priority) {
+    // Insert priority Agency jobs behind any earlier priority jobs, ahead of standard queue items
+    const firstNonPriority = pendingQueue.findIndex((item) => !item.priority);
+    if (firstNonPriority === -1) {
+      pendingQueue.push(task);
+    } else {
+      pendingQueue.splice(firstNonPriority, 0, task);
+    }
+  } else {
+    pendingQueue.push(task);
+  }
+  updateQueuePositions();
   drainQueue();
   return true;
 }

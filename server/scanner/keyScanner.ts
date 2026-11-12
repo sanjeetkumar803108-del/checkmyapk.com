@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { AUDIT_HTTPS_AGENT } from './securityGuard.ts';
 
 export interface LeakedKeyFinding {
   type: string;
@@ -83,7 +84,7 @@ function compactDisplayUrl(rawUrl: string, maxLen = 110): string {
   return `${rawUrl.slice(0, maxLen - 3)}...`;
 }
 
-async function probeGeminiKeyLive(apiKey: string): Promise<boolean> {
+export async function probeGeminiKeyLive(apiKey: string): Promise<boolean> {
   try {
     const resp = await axios.get(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {
       timeout: 2200,
@@ -119,6 +120,7 @@ export async function scanForLeakedKeys(scriptUrls: string[]): Promise<KeyScanRe
       try {
         const resp = await axios.get(url, {
           timeout: 5500,
+          httpsAgent: AUDIT_HTTPS_AGENT,
           maxContentLength: 10 * 1024 * 1024,
           headers: { 'User-Agent': 'CheckMyAPK-Auditor/1.0 (+https://checkmyapk.com)' }
         });
@@ -271,6 +273,7 @@ export async function scanSensitiveWebArtifacts(baseUrl: string, scriptUrls: str
       try {
         const res = await axios.get(url, {
           timeout: 3500,
+          httpsAgent: AUDIT_HTTPS_AGENT,
           maxContentLength: 256 * 1024,
           validateStatus: () => true,
           headers: { 'User-Agent': 'CheckMyAPK-Auditor/1.0 (+https://checkmyapk.com)' }
@@ -307,6 +310,7 @@ export async function scanSensitiveWebArtifacts(baseUrl: string, scriptUrls: str
       try {
         const res = await axios.get(mapUrl, {
           timeout: 3500,
+          httpsAgent: AUDIT_HTTPS_AGENT,
           maxContentLength: 512 * 1024,
           validateStatus: () => true,
           headers: { 'User-Agent': 'CheckMyAPK-Auditor/1.0 (+https://checkmyapk.com)' }

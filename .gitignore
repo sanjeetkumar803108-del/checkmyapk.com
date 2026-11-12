@@ -9,5 +9,6 @@ Thumbs.db
 *.log
 *.apk
 *.aab
+.data/
 
 

@@ -1,7 +1,55 @@
 import dns from 'dns/promises';
+import dnsStandard from 'dns';
+import https from 'https';
 import net from 'net';
 import crypto from 'crypto';
 import axios from 'axios';
+
+/**
+ * Target-only HTTPS agent used exclusively when auditing user-supplied targets.
+ * Allows the scanner to connect to sites with expired/self-signed certs so our
+ * TLS auditor can flag them in the report instead of aborting pre-scan.
+ * Never use globally or for external verification APIs (e.g., Gemini key probe).
+ */
+export const AUDIT_HTTPS_AGENT = new https.Agent({
+  rejectUnauthorized: false,
+  keepAlive: false
+});
+
+async function resolveWithFallbackDns(host: string): Promise<Array<{ address: string }>> {
+  const withTimeout = <T>(promise: Promise<T>, ms: number, errMsg: string): Promise<T> =>
+    Promise.race([
+      promise,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(errMsg)), ms))
+    ]);
+
+  // 1. Primary: system resolver
+  try {
+    const sysRecords = await withTimeout(dns.lookup(host, { all: true }), 4500, 'DNS lookup timeout');
+    if (sysRecords && sysRecords.length > 0) return sysRecords;
+  } catch {
+    // Fall through to resilient public DNS resolvers (Cloudflare / Google / Quad9)
+  }
+
+  // 2. Fallback: explicit UDP DNS via public resolvers (resilient against flaky Windows/ISP DNS)
+  const resolver = new dnsStandard.promises.Resolver();
+  resolver.setServers(['1.1.1.1', '8.8.8.8', '9.9.9.9']);
+
+  const [v4, v6] = await withTimeout(
+    Promise.all([
+      resolver.resolve4(host).catch(() => [] as string[]),
+      resolver.resolve6(host).catch(() => [] as string[])
+    ]),
+    4500,
+    'DNS lookup timeout'
+  );
+
+  const combined = [...v4, ...v6].map((address) => ({ address }));
+  if (combined.length === 0) {
+    throw new Error('DNS lookup returned no A/AAAA records');
+  }
+  return combined;
+}
 
 export interface TargetSafetyResult {
   allowed: boolean;
@@ -159,13 +207,12 @@ export async function validateTargetSafety(
   }
 
   try {
-    const lookupFn =
-      options.dnsLookupFn ||
-      ((h: string) => dns.lookup(h, { all: true }));
-    const records = await Promise.race([
-      lookupFn(hostLower),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DNS lookup timeout')), 3000))
-    ]);
+    const records = options.dnsLookupFn
+      ? await Promise.race([
+          options.dnsLookupFn(hostLower),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DNS lookup timeout')), 3000))
+        ])
+      : await resolveWithFallbackDns(hostLower);
 
     const resolvedIps = records.map((r) => normalizeIp(r.address));
     if (resolvedIps.length === 0) {
@@ -300,3 +347,4 @@ export async function verifyDomainOwnership(
 
   return { verified: false, token: challenge.token };
 }
+

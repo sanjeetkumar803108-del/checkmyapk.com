@@ -2,11 +2,12 @@ import AdmZip from 'adm-zip';
 import crypto from 'crypto';
 import { analyzeDexBytecode, type DexBytecodeGraphSummary } from './dexAnalyzer.ts';
 import { scanNativeElfLibraries, extractPrintableAscii, type NativeElfSummary } from './elfScanner.ts';
+import { probeGeminiKeyLive } from './keyScanner.ts';
 
 export interface ApkFinding {
   category: string;
   type: string;
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'PASS';
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO' | 'PASS';
   proof: string;
   description: string;
   remediation: string;
@@ -53,6 +54,7 @@ export interface ApkScanResult {
   sdks?: string[];
   discoveredEndpoints?: string[];
   baasUrls?: string[];
+  baasJwtHints?: string[];
   dexDeepAudit?: {
     sslBypassSignals: string[];
     webViewSignals: string[];
@@ -101,21 +103,29 @@ const SECRET_PATTERNS = [
 function resolveSecretClassification(patName: string, patSeverity: 'CRITICAL' | 'HIGH', text: string, matchIndex: number): {
   label: string;
   severity: 'CRITICAL' | 'HIGH' | 'LOW';
+  isGoogleKey: boolean;
   isFirebaseClientKey: boolean;
+  hasGeminiContext: boolean;
 } {
   if (!patName.includes('Google Gemini / Cloud')) {
-    return { label: patName, severity: patSeverity, isFirebaseClientKey: false };
-  }
-  const ctx = text.slice(Math.max(0, matchIndex - 260), matchIndex + 260);
-  const isFirebaseCfg = /(?:firebaseapp\.com|authDomain|storageBucket|messagingSenderId|google_app_id|google_api_key|firebaseio\.com|firebasedatabase\.app)/i.test(ctx);
-  if (isFirebaseCfg) {
     return {
-      label: 'Firebase Client API Key (Verify GCP Restrictions)',
-      severity: 'LOW',
-      isFirebaseClientKey: true
+      label: patName,
+      severity: patSeverity,
+      isGoogleKey: false,
+      isFirebaseClientKey: false,
+      hasGeminiContext: false
     };
   }
-  return { label: patName, severity: patSeverity, isFirebaseClientKey: false };
+  const ctx = text.slice(Math.max(0, matchIndex - 320), matchIndex + 320);
+  const hasGeminiContext = /(?:generativelanguage\.googleapis\.com|gemini[-_]|@google\/genai|GoogleGenerativeAI|GenerativeModel)/i.test(ctx);
+  const isFirebaseCfg = /(?:firebaseapp\.com|authDomain|storageBucket|messagingSenderId|google_app_id|google_api_key|firebaseio\.com|firebasedatabase\.app)/i.test(ctx);
+  return {
+    label: isFirebaseCfg ? 'Firebase / Google Client API Key (Verify GCP Restrictions)' : patName,
+    severity: hasGeminiContext ? 'HIGH' : 'LOW',
+    isGoogleKey: true,
+    isFirebaseClientKey: isFirebaseCfg,
+    hasGeminiContext
+  };
 }
 
 const TRACKER_SIGNATURES: Array<{ name: string; markers: string[] }> = [
@@ -197,6 +207,23 @@ function normalizeComponentName(rawName: string, packageName: string): string {
   return rawName;
 }
 
+function readAxmlUtf8Length(buf: Buffer, pos: number): { len: number; bytesRead: number } {
+  if (pos >= buf.length) return { len: 0, bytesRead: 0 };
+  const first = buf[pos];
+  if ((first & 0x80) !== 0 && pos + 1 < buf.length) {
+    return { len: ((first & 0x7f) << 8) | buf[pos + 1], bytesRead: 2 };
+  }
+  return { len: first, bytesRead: 1 };
+}
+
+function safeEntryData(entry: AdmZip.IZipEntry): Buffer | null {
+  try {
+    return entry.getData();
+  } catch {
+    return null;
+  }
+}
+
 // Helper to parse Android Binary XML (AXML) String Pool & Attributes
 function parseAxml(buf: Buffer) {
   try {
@@ -216,11 +243,14 @@ function parseAxml(buf: Buffer) {
     for (let i = 0; i < stringCount; i++) {
       const strPos = stringsStart + stringOffsets[i];
       if (isUtf8) {
-        const u8len = buf[strPos + 1];
-        strings.push(buf.toString('utf8', strPos + 2, strPos + 2 + u8len));
+        const charLen = readAxmlUtf8Length(buf, strPos);
+        const byteLen = readAxmlUtf8Length(buf, strPos + charLen.bytesRead);
+        const dataStart = strPos + charLen.bytesRead + byteLen.bytesRead;
+        const dataEnd = Math.min(buf.length, dataStart + byteLen.len);
+        strings.push(buf.toString('utf8', dataStart, dataEnd));
       } else {
         const u16len = buf.readUInt16LE(strPos);
-        strings.push(buf.toString('utf16le', strPos + 2, strPos + 2 + (u16len * 2)));
+        strings.push(buf.toString('utf16le', strPos + 2, Math.min(buf.length, strPos + 2 + (u16len * 2))));
       }
     }
 
@@ -337,6 +367,23 @@ function parseAxml(buf: Buffer) {
   }
 }
 
+export function peekApkPackageName(apkBuffer: Buffer, fallbackName = 'application.apk'): string {
+  try {
+    const zip = new AdmZip(apkBuffer);
+    const manifestEntry = zip.getEntry('AndroidManifest.xml');
+    if (manifestEntry) {
+      const mBuf = safeEntryData(manifestEntry);
+      if (mBuf) {
+        const parsed = parseAxml(mBuf);
+        if (parsed?.packageName && parsed.packageName !== 'unknown.package') {
+          return parsed.packageName;
+        }
+      }
+    }
+  } catch {}
+  return fallbackName.replace(/\.apk$/i, '') || 'com.android.app';
+}
+
 export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promise<ApkScanResult> {
   const zip = new AdmZip(apkBuffer);
   const entries = zip.getEntries();
@@ -376,17 +423,20 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   };
   
   if (manifestEntry) {
-    parsedManifest = parseAxml(manifestEntry.getData());
+    const mBuf = safeEntryData(manifestEntry);
+    if (mBuf) parsedManifest = parseAxml(mBuf);
   }
 
   const { attributes, permissions, packageName, versionName, versionCode } = parsedManifest;
   const rawComponents: RawManifestComponent[] = parsedManifest.components || [];
 
-  // Extract SDK Versions
+  // Extract SDK Versions cleanly (never fabricate 33 when omitted)
   const minSdkAttr = attributes.find((a: any) => a.name === 'minSdkVersion');
   const targetSdkAttr = attributes.find((a: any) => a.name === 'targetSdkVersion');
-  const minSdkVersion = typeof minSdkAttr?.value === 'number' ? minSdkAttr.value : 21;
-  const targetSdkVersion = typeof targetSdkAttr?.value === 'number' ? targetSdkAttr.value : 33;
+  const parsedMin = Number(minSdkAttr?.value);
+  const parsedTarget = Number(targetSdkAttr?.value);
+  const minSdkVersion = Number.isFinite(parsedMin) && parsedMin > 0 ? parsedMin : undefined;
+  const targetSdkVersion = Number.isFinite(parsedTarget) && parsedTarget > 0 ? parsedTarget : undefined;
 
   // ── AUDIT 1: Debuggable Flag (CRITICAL) ──
   const debuggableAttr = attributes.find((a: any) => a.element === 'application' && a.name === 'debuggable');
@@ -455,7 +505,16 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   }
 
   // ── AUDIT 4: Target SDK Compliance (MEDIUM) ──
-  if (targetSdkVersion < 34) {
+  if (targetSdkVersion === undefined) {
+    findings.push({
+      category: 'OS Compatibility & Security',
+      type: 'Target SDK Version Not Explicitly Declared in Manifest',
+      severity: 'INFO',
+      proof: 'No numeric android:targetSdkVersion attribute was present in compiled AndroidManifest.xml.',
+      description: 'Gradle sometimes strips or overrides uses-sdk attributes in split/instant manifests; verify targetSdk >= 34 in build.gradle.',
+      remediation: 'Confirm defaultConfig.targetSdk = 34 (or higher) inside android/app/build.gradle.'
+    });
+  } else if (targetSdkVersion < 34) {
     findings.push({
       category: 'OS Compatibility & Security',
       type: `Outdated Target SDK Version (${targetSdkVersion})`,
@@ -532,6 +591,15 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   const dexEntries = entries.filter(e => e.entryName.endsWith('.dex'));
   let totalDexBytes = 0;
   const leakedSecrets: any[] = [];
+  const googleKeyHits: Array<{
+    key: string;
+    masked: string;
+    file: string;
+    isFirebaseClientKey: boolean;
+    hasGeminiContext: boolean;
+  }> = [];
+  const baasJwtHintSet = new Set<string>();
+  const hybridSecuritySignals = new Set<string>();
   const foundTrackers = new Set<string>();
   const foundSdks = new Set<string>();
   const sslBypassSignals = new Set<string>();
@@ -552,11 +620,22 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
         const idx = matchArr.index ?? 0;
         const masked = `${match.slice(0, 8)}...${match.slice(-4)}`;
         const resolved = resolveSecretClassification(pat.name, pat.severity, text, idx);
+        if (resolved.isGoogleKey) {
+          if (!googleKeyHits.some((g) => g.key === match)) {
+            googleKeyHits.push({
+              key: match,
+              masked,
+              file: sourceName,
+              isFirebaseClientKey: resolved.isFirebaseClientKey,
+              hasGeminiContext: resolved.hasGeminiContext
+            });
+          }
+          continue;
+        }
         if (!leakedSecrets.some(s => s.match === masked)) {
           leakedSecrets.push({
-            name: isAssetSource && !resolved.isFirebaseClientKey ? `${resolved.label} in assets` : resolved.label,
+            name: isAssetSource ? `${resolved.label} in assets` : resolved.label,
             severity: resolved.severity,
-            isFirebaseClientKey: resolved.isFirebaseClientKey,
             file: sourceName,
             match: masked
           });
@@ -599,6 +678,27 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     if (isAssetSource && sourceName.endsWith('.js')) {
       if (text.includes('document.write(') && text.includes('location.')) {
         webViewSignals.add(`DOM Sink in ${sourceName}`);
+      }
+    }
+
+    // Hybrid (Flutter Dart AOT / React Native Hermes) string-level security checks
+    if (sourceName.includes('libapp.so') || sourceName.includes('.bundle')) {
+      if (/badCertificateCallback/i.test(text)) {
+        sslBypassSignals.add(`Dart HttpClient.badCertificateCallback (${sourceName})`);
+      }
+      if (/AsyncStorage\.setItem\(\s*['"](?:token|jwt|auth_token|access_token|password)['"]/i.test(text)) {
+        hybridSecuritySignals.add(`Unencrypted AsyncStorage Auth Token (${sourceName})`);
+      }
+      if (/ws:\/\/[a-zA-Z0-9.-]+/i.test(text) && !/ws:\/\/(?:localhost|127\.0\.0\.1|10\.0\.2\.2)/i.test(text)) {
+        hybridSecuritySignals.add(`Cleartext WebSocket ws:// (${sourceName})`);
+      }
+    }
+
+    // Extract Supabase / Firebase URLs + nearby anon JWT keys for Stage 3 DB probing
+    if (text.includes('.supabase.co')) {
+      const jwtMatches = text.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g);
+      if (jwtMatches) {
+        for (const jt of jwtMatches.slice(0, 4)) baasJwtHintSet.add(jt);
       }
     }
 
@@ -658,7 +758,8 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
 
   const parsedDexBuffers: Array<{ name: string; buffer: Buffer }> = [];
   for (const dexEntry of dexEntries) {
-    const buf = dexEntry.getData();
+    const buf = safeEntryData(dexEntry);
+    if (!buf) continue;
     totalDexBytes += buf.length;
     parsedDexBuffers.push({ name: dexEntry.entryName, buffer: buf });
     const dexText = buf.toString('latin1');
@@ -677,7 +778,8 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     const isNativeBundle = aEntry.entryName.endsWith('.bundle');
 
     if (isJsOrConfig || isNativeBundle) {
-      const aBuf = aEntry.getData();
+      const aBuf = safeEntryData(aEntry);
+      if (!aBuf) continue;
       const isHermesBytecode =
         isNativeBundle && aBuf.length >= 4 && aBuf[0] === 0xc6 && aBuf[1] === 0x1f && aBuf[2] === 0xbc && aBuf[3] === 0x03;
       const aText = isHermesBytecode ? extractPrintableAscii(aBuf, 8, 4 * 1024 * 1024) : aBuf.toString('latin1');
@@ -713,48 +815,113 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     findings.push(nf);
   }
 
+  // Also inspect resources.arsc before final secret classification so all secrets & BaaS URLs unify cleanly
+  const arscEntry = zip.getEntry('resources.arsc');
+  if (arscEntry) {
+    const arscBuf = safeEntryData(arscEntry);
+    if (arscBuf) {
+      const arscText = arscBuf.toString('latin1');
+      inspectTextChunk(arscText, 'resources.arsc', true);
+    }
+  }
+
+  // Probe up to 4 unique Google AIza... keys via live read-only Gemini check (same precision as Web scanner)
+  const uniqueGoogleKeys = googleKeyHits.slice(0, 4);
+  const geminiLiveResults = await Promise.all(
+    uniqueGoogleKeys.map(async (g) => ({
+      ...g,
+      liveGemini: await probeGeminiKeyLive(g.key)
+    }))
+  );
+
+  const clientGoogleKeys: typeof geminiLiveResults = [];
+  for (const g of geminiLiveResults) {
+    if (g.liveGemini) {
+      findings.push({
+        category: 'Secrets & Cryptography',
+        type: 'Unrestricted Live Gemini AI Key Exposed in APK',
+        severity: 'CRITICAL',
+        proof: `Live probe verified Google API key "${g.masked}" in ${g.file} grants active access to Gemini /v1beta/models (HTTP 200).`,
+        description: 'An attacker who extracts this key from your APK can invoke paid Gemini AI inference endpoints at your expense.',
+        remediation: 'Remove Gemini API keys from mobile client bundles immediately, rotate the key in Google Cloud Console, and route AI calls through your backend proxy.',
+        owaspRef: 'MASVS-CRYPTO-1'
+      });
+    } else if (g.hasGeminiContext && !g.isFirebaseClientKey) {
+      findings.push({
+        category: 'Secrets & Cryptography',
+        type: 'Hardcoded Google AI / Cloud Key Detected in APK',
+        severity: 'HIGH',
+        proof: `Exposed token "${g.masked}" near Gemini/AI context inside ${g.file} (live models endpoint returned non-200).`,
+        description: 'Google AI client key found alongside Gemini endpoints; restrict or proxy server-side immediately.',
+        remediation: 'Move AI API keys to a backend proxy and restrict GCP API keys to Android Package Name + SHA-1.',
+        owaspRef: 'MASVS-CRYPTO-1'
+      });
+    } else {
+      clientGoogleKeys.push(g);
+    }
+  }
+
+  if (clientGoogleKeys.length > 0) {
+    findings.push({
+      category: 'Secrets & Cryptography',
+      type:
+        clientGoogleKeys.length > 1
+          ? `Google / Firebase Client API Keys Detected (${clientGoogleKeys.length} Keys — Verify GCP Restrictions)`
+          : 'Google / Firebase Client API Key Detected (Verify GCP Key Restrictions)',
+      severity: 'LOW',
+      proof: `Detected ${clientGoogleKeys.length} client SDK key(s) (${clientGoogleKeys
+        .map((k) => `${k.masked} in ${k.file}`)
+        .join(', ')}). Live Gemini inference returned non-200.`,
+      description: 'Firebase & Google Maps mobile SDK keys are compiled into client binaries by design, provided GCP Android Package + SHA-1 restrictions and allowed-API scopes are enforced.',
+      remediation: 'In Google Cloud Console -> Credentials, restrict this key to Android Apps (Package Name + SHA-1 fingerprint) and exclude Generative Language / paid GCP APIs.',
+      owaspRef: 'MASVS-CRYPTO-1'
+    });
+  }
+
   if (leakedSecrets.length > 0) {
     for (const s of leakedSecrets) {
-      if (s.isFirebaseClientKey) {
-        findings.push({
-          category: 'Secrets & Cryptography',
-          type: 'Firebase Client API Key Detected (Verify GCP Key Restrictions)',
-          severity: 'LOW',
-          proof: `Exposed Firebase client key "${s.match}" located in ${s.file}`,
-          description: 'Firebase client SDK keys are public by design, but if left unrestricted in Google Cloud Console, attackers can call billable Gemini or GCP APIs using this key.',
-          remediation: 'Restrict this key in Google Cloud Console -> Credentials -> Android Apps (Package Name + SHA-1) and restrict allowed APIs to exclude Generative Language / paid GCP services.',
-          owaspRef: 'MASVS-CRYPTO-1'
-        });
-      } else {
-        findings.push({
-          category: 'Secrets & Cryptography',
-          type: `Hardcoded API Secret in APK (${s.name})`,
-          severity: s.severity,
-          proof: `Exposed token pattern "${s.match}" located in compiled byte archive ${s.file}`,
-          description: 'Hardcoded secrets in compiled DEX or asset files can be trivially extracted in 10 seconds using reverse engineering tools like JADX or apktool.',
-          remediation: 'Never compile API keys into mobile client code. Move AI inference calls to your server-side API proxy.'
-        });
-      }
+      findings.push({
+        category: 'Secrets & Cryptography',
+        type: `Hardcoded API Secret in APK (${s.name})`,
+        severity: s.severity,
+        proof: `Exposed token pattern "${s.match}" located in compiled byte archive ${s.file}`,
+        description: 'Hardcoded secrets in compiled DEX or asset files can be trivially extracted in 10 seconds using reverse engineering tools like JADX or apktool.',
+        remediation: 'Never compile API keys into mobile client code. Move AI inference calls to your server-side API proxy.'
+      });
     }
-  } else {
+  } else if (googleKeyHits.length === 0) {
     findings.push({
       category: 'Secrets & Cryptography',
       type: 'No Hardcoded API Keys Detected in DEX/Assets',
       severity: 'PASS',
       proof: `Scanned ${(totalDexBytes / 1024 / 1024).toFixed(1)} MB compiled Dalvik bytecode across ${dexEntries.length} DEX files with 0 secret leaks.`,
-      description: 'Bytecode archive does not expose OpenAI, Claude, Stripe, or AWS live secrets.',
+      description: 'Bytecode archive does not expose OpenAI, Claude, Stripe, AWS, or live Gemini secrets.',
       remediation: 'Continue enforcing backend API proxies for all sensitive third-party services.'
     });
   }
 
-  // ── AUDIT 7: Keystore Signature (Debug vs Release) ──
+  // ── AUDIT 7: APK Keystore Signature Verification (v1 META-INF + v2/v3 APK Sig Block 42) ──
   const metaEntries = entries.filter(e => e.entryName.startsWith('META-INF/'));
+  const hasV1CertFile = metaEntries.some((me) => /\.(?:RSA|DSA|EC|SF)$/i.test(me.entryName));
+  const sigBlockMagicIdx = apkBuffer.indexOf('APK Sig Block 42');
+  const hasV2V3SigBlock = sigBlockMagicIdx > 16;
+
   let isDebugSignature = false;
   for (const me of metaEntries) {
-    const mData = me.getData().toString('latin1');
+    const mBuf = safeEntryData(me);
+    if (!mBuf) continue;
+    const mData = mBuf.toString('latin1');
     if (mData.includes('Android Debug') || mData.includes('androiddebugkey')) {
       isDebugSignature = true;
       break;
+    }
+  }
+  if (!isDebugSignature && hasV2V3SigBlock) {
+    const sigTail = apkBuffer
+      .subarray(Math.max(0, sigBlockMagicIdx - 16384), sigBlockMagicIdx)
+      .toString('latin1');
+    if (sigTail.includes('Android Debug') || sigTail.includes('androiddebugkey')) {
+      isDebugSignature = true;
     }
   }
 
@@ -763,17 +930,32 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
       category: 'Binary & Signing Security',
       type: 'Signed with Android Debug Certificate (Non-Production)',
       severity: 'CRITICAL',
-      proof: 'APK certificate contains CN=Android Debug / androiddebugkey.',
+      proof: `APK signing block / META-INF certificate contains CN=Android Debug / androiddebugkey (${hasV2V3SigBlock ? 'v2/v3' : 'v1'} signed).`,
       description: 'Debug keystores are publicly known and insecure. Attackers can forge fake updates, bypass signatures, and tamper with binaries.',
       remediation: 'Sign your APK using a private, password-protected production keystore via Android Studio -> Generate Signed App Bundle.'
     });
-  } else {
+  } else if (!hasV1CertFile && !hasV2V3SigBlock) {
     findings.push({
       category: 'Binary & Signing Security',
-      type: 'Production Keystore Signature Detected',
+      type: 'Unsigned APK Container (No v1/v2/v3 Signature Detected)',
+      severity: 'CRITICAL',
+      proof: 'Neither META-INF v1 certificates (.RSA/.DSA/.EC) nor an APK Signing Block v2/v3 ("APK Sig Block 42") was found in this archive.',
+      description: 'Unsigned APKs cannot be installed securely on Android devices and indicate an incomplete build or tampered archive.',
+      remediation: 'Sign the release build using apksigner (APK Signature Scheme v2/v3) with your production keystore.'
+    });
+  } else {
+    const schemeLabel =
+      hasV1CertFile && hasV2V3SigBlock
+        ? 'v1 JAR + v2/v3 APK Sig Block'
+        : hasV2V3SigBlock
+        ? 'v2/v3 APK Sig Block'
+        : 'v1 JAR META-INF';
+    findings.push({
+      category: 'Binary & Signing Security',
+      type: `Production Keystore Signature Verified (${schemeLabel})`,
       severity: 'PASS',
-      proof: 'No public debug keystore signatures detected in META-INF.',
-      description: 'Binary is packaged for distribution with custom release signing credentials.',
+      proof: `Verified ${schemeLabel} signature presence with zero Android Debug / androiddebugkey certificates.`,
+      description: 'Binary is signed for distribution with non-debug release signing credentials.',
       remediation: 'Keep your release keystore file backed up securely in an encrypted vault.'
     });
   }
@@ -794,7 +976,7 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     const isExported =
       explicitlyExported ||
       implicitViaIntentFilter ||
-      (comp.exported === null && comp.componentType === 'provider' && targetSdkVersion < 17);
+      (comp.exported === null && comp.componentType === 'provider' && targetSdkVersion !== undefined && targetSdkVersion < 17);
 
     if (!isExported) continue;
 
@@ -910,14 +1092,36 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     findings.push(df);
   }
   if (dexCfg.summary.taintPaths.length === 0 && dexEntries.length > 0) {
+    const isHybridRuntime = frameworkDetected === 'Flutter' || frameworkDetected === 'React Native';
     findings.push({
       category: 'Deep Bytecode Taint Graph',
       type: `Dalvik Control-Flow & Cross-Method Taint Clean (${dexCfg.summary.methodsAnalyzed.toLocaleString()} Methods)`,
       severity: 'PASS',
       owaspRef: 'MASVS-CODE-1',
-      proof: `Disassembled ${dexCfg.summary.totalClasses.toLocaleString()} DEX classes (${dexCfg.summary.appClasses.toLocaleString()} app/custom classes, ${dexCfg.summary.instructionsScanned.toLocaleString()} Dalvik opcodes) in ${dexCfg.summary.durationMs}ms with 0 intra- or cross-method Source -> Sink taint flows.`,
-      description: 'Intraprocedural and cross-method (multi-hop) register taint tracing found zero unvalidated Intent/URI/Clipboard flows reaching WebView loadUrl, SQLite rawQuery, Runtime.exec, or Intent redirect sinks.',
+      proof: `Disassembled ${dexCfg.summary.totalClasses.toLocaleString()} DEX classes (${dexCfg.summary.appClasses.toLocaleString()} app/custom classes, ${dexCfg.summary.instructionsScanned.toLocaleString()} Dalvik opcodes) in ${dexCfg.summary.durationMs}ms with 0 intra- or cross-method Source -> Sink taint flows.${
+        isHybridRuntime
+          ? ` Note: ${frameworkDetected} UI/business logic executes inside compiled ${
+              frameworkDetected === 'Flutter' ? 'Dart AOT (libapp.so)' : 'Hermes/JS bundles'
+            }, which were audited via native/bundle string inspection.`
+          : ''
+      }`,
+      description: isHybridRuntime
+        ? `Android Java/Kotlin bridge wrapper showed zero Dalvik taint leaks. (${frameworkDetected} Dart/JS core logic runs in native/Hermes binaries and was inspected via extracted runtime strings.)`
+        : 'Intraprocedural and cross-method (multi-hop) register taint tracing found zero unvalidated Intent/URI/Clipboard flows reaching WebView loadUrl, SQLite rawQuery, Runtime.exec, or Intent redirect sinks.',
       remediation: 'Continue validating external Intent/URI extras and enforcing parameterized database queries.'
+    });
+  }
+
+  const hybridSignalList = Array.from(hybridSecuritySignals);
+  if (hybridSignalList.length > 0) {
+    findings.push({
+      category: 'Deep Bytecode Audit (DEX)',
+      type: `Hybrid Runtime Security Risks Detected (${hybridSignalList.length})`,
+      severity: 'MEDIUM',
+      owaspRef: 'MASVS-STORAGE-1',
+      proof: `Extracted from ${frameworkDetected} runtime binary strings: ${hybridSignalList.slice(0, 4).join(', ')}`,
+      description: 'Insecure token persistence (AsyncStorage) or unencrypted ws:// sockets inside Flutter/React Native bundles expose session credentials on compromised devices or open Wi-Fi.',
+      remediation: 'Use encrypted Keystore-backed storage (flutter_secure_storage / react-native-keychain) and enforce wss:// TLS WebSockets.'
     });
   }
 
@@ -952,50 +1156,8 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   const trackers = Array.from(foundTrackers);
   const sdks = Array.from(foundSdks);
 
-  // ── AUDIT 10: resources.arsc Strings & BaaS Discovery ──
-  const arscEntry = zip.getEntry('resources.arsc');
-  if (arscEntry) {
-    const arscText = arscEntry.getData().toString('latin1');
-    const arscBaasMatches = arscText.match(/https:\/\/[a-zA-Z0-9-]+\.(?:firebaseio\.com|firebasedatabase\.app|supabase\.co)/g);
-    if (arscBaasMatches) {
-      for (const bUrl of arscBaasMatches) {
-        baasUrlSet.add(bUrl);
-      }
-    }
-    for (const pat of SECRET_PATTERNS) {
-      const regex = new RegExp(pat.regex.source, pat.regex.flags);
-      for (const matchArr of arscText.matchAll(regex)) {
-        const m = matchArr[0];
-        const masked = `${m.slice(0, 8)}...${m.slice(-4)}`;
-        const resolved = resolveSecretClassification(pat.name, pat.severity, arscText, matchArr.index ?? 0);
-        const alreadyReported = findings.some(f => f.proof.includes(masked)) || leakedSecrets.some(s => s.match === masked);
-        if (!alreadyReported) {
-          if (resolved.isFirebaseClientKey || arscText.includes('google_app_id')) {
-            if (pat.name.includes('Google Gemini / Cloud')) {
-              findings.push({
-                category: 'Secrets & Cryptography',
-                type: 'Firebase Client API Key in resources.arsc (Verify GCP Key Restrictions)',
-                severity: 'LOW',
-                proof: `Detected google_api_key "${masked}" in compiled res/values resources.arsc`,
-                description: 'Standard google-services.json client key compiled into strings. Ensure it is strictly restricted in Google Cloud Console to your Android SHA-1 & Firebase APIs.',
-                remediation: 'Lock this API key inside Google Cloud Console -> Credentials -> Android app restriction + API restrictions (disable Generative Language API).'
-              });
-              continue;
-            }
-          }
-          findings.push({
-            category: 'Secrets & Cryptography',
-            type: `Hardcoded API Secret in resources.arsc (${resolved.label})`,
-            severity: resolved.severity,
-            proof: `Exposed token pattern "${masked}" in compiled res/values resources.arsc`,
-            description: 'Strings in res/values/strings.xml are trivially decoded from resources.arsc using apktool.',
-            remediation: 'Remove sensitive keys from strings.xml and inject temporary session tokens only from your backend.'
-          });
-        }
-      }
-    }
-  }
   const baasUrls = Array.from(baasUrlSet).slice(0, 6);
+  const baasJwtHints = Array.from(baasJwtHintSet).slice(0, 6);
 
   // ── AUDIT 11: Network Security Config XML & SSL Certificate Pinning Audit ──
   const xmlResEntries = entries.filter(e => /^res\/xml\/.*\.xml$/i.test(e.entryName));
@@ -1004,7 +1166,9 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   const pinningSignalsAll: string[] = [...(dexCfg.summary.pinningSignals || [])];
 
   for (const xe of xmlResEntries) {
-    const parsedXml = parseAxml(xe.getData());
+    const xBuf = safeEntryData(xe);
+    if (!xBuf) continue;
+    const parsedXml = parseAxml(xBuf);
     if (parsedXml.attributes.some(a => a.element === 'certificates' && a.name === 'src' && String(a.value) === 'user')) {
       trustsUserCerts = true;
     }
@@ -1066,8 +1230,8 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   let obfuscatedClassCount = 0;
   let clearAppClassCount = 0;
   const appPkgSlash = `L${packageName.replace(/\./g, '/')}/`;
-  for (const dexEntry of dexEntries) {
-    const dexStr = dexEntry.getData().toString('latin1');
+  for (const dexBuf of parsedDexBuffers) {
+    const dexStr = dexBuf.buffer.toString('latin1');
     const shortMatches = dexStr.match(/L[a-z0-9_$\/]{1,20}\/[a-z][0-9]?;[\x00]/g);
     if (shortMatches) obfuscatedClassCount += shortMatches.length;
     let idx = 0;
@@ -1130,6 +1294,7 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     sdks,
     discoveredEndpoints,
     baasUrls,
+    baasJwtHints,
     dexDeepAudit: {
       sslBypassSignals: sslList,
       webViewSignals: webViewList,
