@@ -18,7 +18,8 @@ import { RevealOnScroll } from './RevealOnScroll';
 
 interface HomepageSectionsProps {
   currentUser: UserAccount | null;
-  onSelectPlan: (plan: AccountPlan) => void;
+  onSelectPlan: (plan: AccountPlan, billingCycle?: 'monthly' | 'annual') => void;
+  checkoutBusyPlan?: AccountPlan | null;
   onStartAudit: (mode: 'apk' | 'web') => void;
   onOpenLegal?: (doc: LegalDocId) => void;
   onOpenPricingPage?: () => void;
@@ -64,6 +65,7 @@ const FAQ_ITEMS = [
 export const HomepageSections: React.FC<HomepageSectionsProps> = ({
   currentUser,
   onSelectPlan,
+  checkoutBusyPlan = null,
   onStartAudit,
   onOpenLegal,
   onOpenPricingPage,
@@ -74,22 +76,22 @@ export const HomepageSections: React.FC<HomepageSectionsProps> = ({
   const plans = PLAN_DISPLAY_CARDS.map((card) => ({
     id: card.id,
     name: card.name,
-    badge: card.id === 'pro' ? 'Public Beta Free' : card.badge,
+    badge: card.badge,
     priceMonthly: `$${card.priceMonthly}`,
     priceAnnual: `$${card.priceAnnual}`,
     subtitle: card.subtitle,
     features: card.highlights,
     highlighted: card.highlighted,
     cta:
-      currentUser?.plan === card.id
-        ? card.id === 'free'
-          ? 'Current Plan'
-          : 'Active Beta Plan'
+      checkoutBusyPlan === card.id
+        ? 'Opening Checkout...'
+        : currentUser?.plan === card.id
+        ? 'Current Plan'
         : card.id === 'free'
         ? 'Start Free'
         : card.id === 'pro'
-        ? 'Activate Pro Beta'
-        : 'Activate Team Beta',
+        ? 'Upgrade to Pro'
+        : 'Get Team & Agency',
   }));
 
   return (
@@ -186,7 +188,7 @@ export const HomepageSections: React.FC<HomepageSectionsProps> = ({
           <div className="text-center space-y-3 max-w-2xl mx-auto">
             <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-emerald-300/90 font-semibold">
               <Sparkles className="w-3.5 h-3.5" />
-              Simple SaaS Tiers • Free During Public Beta
+              Simple SaaS Tiers • Transparent Billing
             </span>
             <h2 className="text-2xl sm:text-4xl font-google font-semibold tracking-[-0.035em] text-white">
               Start Free. Scale With Confidence.
@@ -247,11 +249,6 @@ export const HomepageSections: React.FC<HomepageSectionsProps> = ({
                         {annualBilling ? plan.priceAnnual : plan.priceMonthly}
                       </span>
                       <span className="text-xs text-slate-400">/ month</span>
-                      {plan.id !== 'free' && (
-                        <span className="ml-2 text-[10px] font-mono text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">
-                          $0 in Beta
-                        </span>
-                      )}
                     </div>
 
                     <p className="text-xs text-slate-400 leading-relaxed">{plan.subtitle}</p>
@@ -268,8 +265,8 @@ export const HomepageSections: React.FC<HomepageSectionsProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => onSelectPlan(plan.id)}
-                    disabled={isActive}
+                    onClick={() => onSelectPlan(plan.id, annualBilling ? 'annual' : 'monthly')}
+                    disabled={isActive || checkoutBusyPlan === plan.id}
                     className={`mt-6 w-full py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
                       isActive
                         ? 'bg-emerald-500/15 border border-emerald-400/35 text-emerald-300 cursor-default'

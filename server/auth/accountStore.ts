@@ -24,6 +24,10 @@ export interface StoredAccount {
   avatarUrl?: string;
   authProvider?: 'email' | 'google';
   plan: AccountPlan;
+  billingCycle?: 'monthly' | 'annual';
+  billingStatus?: 'active' | 'past_due' | 'on_hold' | 'paused' | 'cancelled' | 'expired' | 'failed';
+  dodoCustomerId?: string | null;
+  dodoSubscriptionId?: string | null;
   dailyScansUsed: number;
   dailyScanDate: string; // YYYY-MM-DD
   monthlyPeriodKey?: string; // YYYY-MM
@@ -40,6 +44,10 @@ export interface PublicAccount {
   avatarUrl?: string;
   authProvider?: 'email' | 'google';
   plan: AccountPlan;
+  billingCycle?: 'monthly' | 'annual';
+  billingStatus?: 'active' | 'past_due' | 'on_hold' | 'paused' | 'cancelled' | 'expired' | 'failed';
+  dodoCustomerId?: string | null;
+  dodoSubscriptionId?: string | null;
   dailyScansUsed: number;
   dailyScanLimit: number | null;
   scanQuotaPeriod: 'month' | 'day';
@@ -207,6 +215,10 @@ export function toPublicAccount(user: StoredAccount): PublicAccount {
 
   return {
     id: user.id,
+    billingCycle: user.billingCycle,
+    billingStatus: user.billingStatus,
+    dodoCustomerId: user.dodoCustomerId ?? null,
+    dodoSubscriptionId: user.dodoSubscriptionId ?? null,
     name: user.name,
     email: user.email,
     avatarUrl: user.avatarUrl,
@@ -739,6 +751,106 @@ export function saveContactMessage(input: ContactInquiryInput): StoredContactInq
 
   return record;
 }
+
+const DODO_EVENTS_DB_PATH = path.join(DATA_DIR, 'dodo_events.json');
+
+interface ProcessedWebhookRecord {
+  id: string;
+  type?: string;
+  userId?: string | null;
+  processedAt: string;
+}
+
+function readDodoEvents(): ProcessedWebhookRecord[] {
+  ensureDataDir();
+  if (!fs.existsSync(DODO_EVENTS_DB_PATH)) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DODO_EVENTS_DB_PATH, 'utf8'));
+    if (Array.isArray(parsed)) return parsed;
+  } catch {}
+  return [];
+}
+
+export function hasProcessedWebhookEvent(eventId: string): boolean {
+  const cleanId = String(eventId || '').trim();
+  if (!cleanId) return false;
+  return readDodoEvents().some((entry) => entry && entry.id === cleanId);
+}
+
+export function markWebhookEventProcessed(
+  eventId: string,
+  meta?: { type?: string; userId?: string | null }
+): void {
+  const cleanId = String(eventId || '').trim();
+  if (!cleanId) return;
+  const entries = readDodoEvents();
+  if (entries.some((entry) => entry && entry.id === cleanId)) return;
+
+  entries.unshift({
+    id: cleanId,
+    type: meta?.type,
+    userId: meta?.userId ?? null,
+    processedAt: new Date().toISOString(),
+  });
+  const trimmed = entries.slice(0, 2000);
+  const tmpPath = `${DODO_EVENTS_DB_PATH}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(trimmed, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmpPath, DODO_EVENTS_DB_PATH);
+}
+
+export function findAccountIdByEmail(email: string): string | null {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const db = readDb();
+  const user = db.users.find((u) => u.email.toLowerCase() === normalized);
+  return user ? user.id : null;
+}
+
+export function findAccountIdBySubscriptionId(subscriptionId: string): string | null {
+  const normalized = String(subscriptionId || '').trim();
+  if (!normalized) return null;
+  const db = readDb();
+  const user = db.users.find((u) => u.dodoSubscriptionId === normalized);
+  return user ? user.id : null;
+}
+
+export function updateAccountBilling(
+  userId: string,
+  patch: {
+    plan?: AccountPlan;
+    billingCycle?: 'monthly' | 'annual';
+    billingStatus?: PublicAccount['billingStatus'];
+    dodoCustomerId?: string | null;
+    dodoSubscriptionId?: string | null;
+  }
+): PublicAccount | null {
+  const db = readDb();
+  const user = db.users.find((u) => u.id === userId);
+  if (!user) return null;
+
+  if (patch.plan === 'free' || patch.plan === 'pro' || patch.plan === 'agency') {
+    user.plan = patch.plan;
+  }
+  if (patch.billingCycle === 'monthly' || patch.billingCycle === 'annual') {
+    user.billingCycle = patch.billingCycle;
+  }
+  if (patch.billingStatus !== undefined) {
+    user.billingStatus = patch.billingStatus;
+  }
+  if (patch.dodoCustomerId !== undefined) {
+    user.dodoCustomerId = patch.dodoCustomerId;
+  }
+  if (patch.dodoSubscriptionId !== undefined) {
+    user.dodoSubscriptionId = patch.dodoSubscriptionId;
+  }
+
+  normalizeUserQuota(user);
+  writeDb(db);
+  return toPublicAccount(user);
+}
+
 
 
 

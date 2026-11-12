@@ -22,6 +22,10 @@ export interface UserAccount {
   avatarUrl?: string;
   authProvider?: 'email' | 'google';
   plan: AccountPlan;
+  billingCycle?: 'monthly' | 'annual';
+  billingStatus?: 'active' | 'past_due' | 'on_hold' | 'paused' | 'cancelled' | 'expired' | 'failed';
+  dodoCustomerId?: string | null;
+  dodoSubscriptionId?: string | null;
   dailyScansUsed: number;
   dailyScanLimit: number | null;
   scanQuotaPeriod?: 'month' | 'day';

@@ -77,6 +77,8 @@ export const AccountPage: React.FC<AccountPageProps> = ({
   const [emailCopied, setEmailCopied] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [busyPlan, setBusyPlan] = useState<AccountPlan | null>(null);
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
+  const [billingError, setBillingError] = useState<string | null>(null);
   const [rotatingToken, setRotatingToken] = useState(false);
 
   const handleCopyEmail = async (address: string) => {
@@ -104,17 +106,38 @@ export const AccountPage: React.FC<AccountPageProps> = ({
   const handlePlanChange = async (plan: AccountPlan) => {
     if (plan === user.plan) return;
     setBusyPlan(plan);
+    setBillingError(null);
     try {
-      const res = await fetch('/api/auth/plan', {
+      if (plan === 'free') {
+        const res = await fetch('/api/auth/plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ plan: 'free' }),
+        });
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.user) {
+          onUserUpdated(data.user);
+        } else {
+          setBillingError(data?.error || 'Could not update your plan.');
+        }
+        return;
+      }
+
+      const res = await fetch('/api/billing/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ plan }),
+        body: JSON.stringify({ plan, billingCycle }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.user) onUserUpdated(data.user);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.checkoutUrl) {
+        window.location.href = data.checkoutUrl;
+        return;
       }
+      setBillingError(data?.error || 'Could not launch Dodo Payments checkout. Please try again shortly.');
+    } catch {
+      setBillingError('Network error while contacting billing service.');
     } finally {
       setBusyPlan(null);
     }
@@ -499,20 +522,49 @@ export const AccountPage: React.FC<AccountPageProps> = ({
               </div>
             )}
 
-            <div className="space-y-2 pt-1">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold text-slate-400">
-                  Switch Public Beta Tier
-                </span>
-                {onOpenPricingPage && (
-                  <button
-                    type="button"
-                    onClick={onOpenPricingPage}
-                    className="text-[11px] font-bold text-cyan-300 hover:underline cursor-pointer"
-                  >
-                    Compare All Plans →
-                  </button>
-                )}
+            <div className="space-y-2.5 pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold text-slate-400">
+                    Plan &amp; Subscription
+                  </span>
+                  {user.billingStatus && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase bg-emerald-500/15 border border-emerald-400/30 text-emerald-300">
+                      {user.billingStatus.replace('_', ' ')}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="inline-flex rounded-lg bg-white/[0.04] border border-white/10 p-0.5 text-[10px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setBillingCycle('monthly')}
+                      className={`px-2 py-0.5 rounded-md cursor-pointer transition-colors ${
+                        billingCycle === 'monthly' ? 'bg-white/15 text-white' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Monthly
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBillingCycle('annual')}
+                      className={`px-2 py-0.5 rounded-md cursor-pointer transition-colors ${
+                        billingCycle === 'annual' ? 'bg-cyan-500/25 text-cyan-200' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Annual (-20%)
+                    </button>
+                  </div>
+                  {onOpenPricingPage && (
+                    <button
+                      type="button"
+                      onClick={onOpenPricingPage}
+                      className="text-[11px] font-bold text-cyan-300 hover:underline cursor-pointer"
+                    >
+                      Compare All Plans →
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {(['free', 'pro', 'agency'] as AccountPlan[]).map((tier) => (
@@ -531,10 +583,15 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                   </button>
                 ))}
               </div>
+              {billingError && (
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-400/30 text-[11px] text-amber-200">
+                  {billingError}
+                </div>
+              )}
             </div>
 
             <p className="text-[11px] text-slate-500 leading-relaxed">
-              Public Beta: All plan tiers are previewable without billing charges while payment gateway integration is in staging.
+              Paid upgrades (Pro &amp; Team &amp; Agency) checkout securely via Dodo Payments. You can switch back to Starter Free anytime.
             </p>
           </div>
 
@@ -622,7 +679,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                   onClick={() => handlePlanChange('agency')}
                   className="px-3 py-1.5 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-purple-200 text-[11px] font-bold shrink-0 cursor-pointer"
                 >
-                  Preview Agency Tier
+                  Upgrade to Agency
                 </button>
               </div>
             )}

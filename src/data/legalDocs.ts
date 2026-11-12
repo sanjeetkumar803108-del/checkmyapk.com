@@ -72,7 +72,7 @@ export const TERMS_OF_SERVICE_DOC: LegalDocument = {
       body: 'Audit reports combine deterministic checks (Confirmed) with static pattern matching (Heuristic • Verify Context). All scores, compliance tags, and remediation code patches are provided "AS IS" to assist engineering QA and Play Store reviews—they do not constitute legal certification (SOC 2, ISO 27001, PCI-DSS) or replace an authorized manual penetration test.',
     },
     {
-      title: '5. Public Beta Plans, Quotas & Service Availability',
+      title: '5. Subscription Plans, Quotas & Billing Availability',
       body: 'Starter accounts allow up to 2 unique apps/sites per month (max 3 scans per target, 25MB APK). Pro Security allows 15 unique apps/sites per month with unlimited fair-use re-scans (75MB APK), and Team & Agency allows 60 unique apps/sites per month with unlimited fair-use re-scans (150MB APK, CI/CD API tokens, and priority queue). CheckMyAPK may adjust fair-use safeguards to preserve platform stability.',
     },
     {

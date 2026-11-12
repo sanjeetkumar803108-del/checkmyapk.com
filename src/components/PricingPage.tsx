@@ -24,7 +24,8 @@ import {
 
 interface PricingPageProps {
   currentUser: UserAccount | null;
-  onSelectPlan: (plan: AccountPlan) => void;
+  onSelectPlan: (plan: AccountPlan, billingCycle?: 'monthly' | 'annual') => void;
+  checkoutBusyPlan?: AccountPlan | null;
   onBack: () => void;
   onOpenLegal?: (doc: LegalDocId) => void;
 }
@@ -96,6 +97,7 @@ function renderComparisonCell(cell: ComparisonCell) {
 export const PricingPage: React.FC<PricingPageProps> = ({
   currentUser,
   onSelectPlan,
+  checkoutBusyPlan = null,
   onBack,
   onOpenLegal,
 }) => {
@@ -113,8 +115,11 @@ export const PricingPage: React.FC<PricingPageProps> = ({
       : PRICING_COMPARISON_GROUPS.filter((g) => g.id === categoryFilter);
 
   const getCtaLabel = (planId: AccountPlan, defaultLabel: string) => {
+    if (checkoutBusyPlan === planId) {
+      return 'Opening Checkout...';
+    }
     if (currentUser?.plan === planId) {
-      return planId === 'free' ? 'Current Plan' : 'Active Beta Plan';
+      return 'Current Plan';
     }
     return defaultLabel;
   };
@@ -134,7 +139,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({
 
         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-mono uppercase tracking-[0.16em] bg-emerald-500/10 border border-emerald-400/25 text-emerald-300 font-semibold">
           <Sparkles className="w-3 h-3" />
-          Transparent Plans • Free Public Beta
+          Transparent SaaS Plans • Cancel Anytime
         </span>
       </div>
 
@@ -193,8 +198,8 @@ export const PricingPage: React.FC<PricingPageProps> = ({
             plan.id === 'free'
               ? 'Start Free'
               : plan.id === 'pro'
-              ? 'Activate Pro Beta'
-              : 'Activate Team Beta';
+              ? 'Upgrade to Pro'
+              : 'Get Team & Agency';
 
           return (
             <div
@@ -235,11 +240,6 @@ export const PricingPage: React.FC<PricingPageProps> = ({
                       ${displayPrice}
                     </span>
                     <span className="text-xs text-slate-400">/ month</span>
-                    {plan.id !== 'free' && (
-                      <span className="ml-1.5 text-[10px] font-mono text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">
-                        $0 in Beta
-                      </span>
-                    )}
                   </div>
                   {plan.id !== 'free' && (
                     <div className="text-[11px] text-slate-400">
@@ -268,8 +268,8 @@ export const PricingPage: React.FC<PricingPageProps> = ({
 
               <button
                 type="button"
-                onClick={() => onSelectPlan(plan.id)}
-                disabled={isActive}
+                onClick={() => onSelectPlan(plan.id, annualBilling ? 'annual' : 'monthly')}
+                disabled={isActive || checkoutBusyPlan === plan.id}
                 className={`mt-6 w-full py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
                   isActive
                     ? 'bg-emerald-500/15 border border-emerald-400/35 text-emerald-300 cursor-default'
@@ -363,8 +363,8 @@ export const PricingPage: React.FC<PricingPageProps> = ({
                         </div>
                         <button
                           type="button"
-                          onClick={() => onSelectPlan(plan.id)}
-                          disabled={isActive}
+                          onClick={() => onSelectPlan(plan.id, annualBilling ? 'annual' : 'monthly')}
+                          disabled={isActive || checkoutBusyPlan === plan.id}
                           className={`w-full py-1.5 px-2 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer ${
                             isActive
                               ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-400/30 cursor-default'
@@ -485,12 +485,14 @@ export const PricingPage: React.FC<PricingPageProps> = ({
 
             <button
               type="button"
-              onClick={() => onSelectPlan(mobileFocusPlan)}
-              disabled={currentUser?.plan === mobileFocusPlan}
+              onClick={() => onSelectPlan(mobileFocusPlan, annualBilling ? 'annual' : 'monthly')}
+              disabled={currentUser?.plan === mobileFocusPlan || checkoutBusyPlan === mobileFocusPlan}
               className="w-full py-2.5 rounded-xl text-xs font-black bg-gradient-to-r from-cyan-400 to-emerald-400 text-slate-950 disabled:opacity-50 cursor-pointer"
             >
-              {currentUser?.plan === mobileFocusPlan
-                ? 'Active Plan'
+              {checkoutBusyPlan === mobileFocusPlan
+                ? 'Opening Checkout...'
+                : currentUser?.plan === mobileFocusPlan
+                ? 'Current Plan'
                 : `Select ${PLAN_DISPLAY_CARDS.find((p) => p.id === mobileFocusPlan)?.name}`}
             </button>
           </div>

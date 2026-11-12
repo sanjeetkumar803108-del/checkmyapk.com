@@ -139,7 +139,7 @@ export const PLAN_DISPLAY_CARDS: PlanCardDisplayMeta[] = [
     id: 'pro',
     name: PLAN_POLICIES.pro.name,
     tagline: 'Best for Solo Devs & Startups',
-    badge: 'Most Popular • Beta Free',
+    badge: 'Most Popular',
     priceMonthly: PLAN_POLICIES.pro.monthlyPriceUsd,
     priceAnnual: PLAN_POLICIES.pro.annualMonthlyPriceUsd,
     annualTotalUsd: PLAN_POLICIES.pro.annualMonthlyPriceUsd * 12,

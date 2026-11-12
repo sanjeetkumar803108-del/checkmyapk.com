@@ -45,6 +45,11 @@ import {
   consumeScanTargetQuota,
   getAccountPlanById,
   updateAccountPlan,
+  updateAccountBilling,
+  findAccountIdByEmail,
+  findAccountIdBySubscriptionId,
+  hasProcessedWebhookEvent,
+  markWebhookEventProcessed,
   rotateAccountToken,
   verifyFirebaseIdToken,
   upsertGoogleAccount,
@@ -55,6 +60,15 @@ import {
   type AccountPlan
 } from './server/auth/accountStore.ts';
 import { dispatchContactEmail } from './server/mail/contactMailer.ts';
+import {
+  BillingConfigError,
+  createDodoCheckoutSession,
+  getDodoBillingStatus,
+  resolvePlanFromProductId,
+  unwrapDodoWebhook,
+  type BillingCycle,
+  type PaidAccountPlan,
+} from './server/billing/dodoPayments.ts';
 
 dotenv.config();
 
@@ -69,6 +83,110 @@ const IS_PROD = process.env.NODE_ENV === 'production' || process.argv.includes('
 const MAX_APK_SIZE_MB = Number(process.env.MAX_APK_UPLOAD_MB || 150);
 
 app.use(cors({ origin: true, credentials: true }));
+
+// Dodo Payments webhook MUST read the raw JSON payload before express.json() parses it.
+app.post('/api/webhooks/dodo', express.raw({ type: 'application/json' }), (req, res) => {
+  try {
+    const rawBody = Buffer.isBuffer(req.body)
+      ? req.body.toString('utf8')
+      : typeof req.body === 'string'
+        ? req.body
+        : '';
+
+    if (!rawBody) {
+      return res.status(400).json({ error: 'Missing raw webhook payload.' });
+    }
+
+    const event = unwrapDodoWebhook(rawBody, req.headers);
+    const headerWebhookId = String(req.header('webhook-id') || req.header('svix-id') || '').trim();
+    const dataAny = event.data as unknown as Record<string, any>;
+    const entityId = String(dataAny?.subscription_id || dataAny?.payment_id || '');
+    const eventKey = headerWebhookId || `${event.type}:${event.timestamp}:${entityId}`;
+
+    if (eventKey && hasProcessedWebhookEvent(eventKey)) {
+      return res.json({ received: true, duplicate: true });
+    }
+
+    let updatedUserId: string | null = null;
+
+    if (event.type.startsWith('subscription.')) {
+      const subData = event.data as any;
+      const meta = (subData?.metadata || {}) as Record<string, unknown>;
+      const metaUserId = typeof meta.userId === 'string' ? meta.userId.trim() : '';
+      const subId = typeof subData?.subscription_id === 'string' ? subData.subscription_id.trim() : '';
+      const customerEmail = typeof subData?.customer?.email === 'string' ? subData.customer.email.trim() : '';
+      const customerId = typeof subData?.customer?.customer_id === 'string' ? subData.customer.customer_id : null;
+
+      updatedUserId =
+        (metaUserId && getAccountById(metaUserId) ? metaUserId : null) ||
+        (subId ? findAccountIdBySubscriptionId(subId) : null) ||
+        (customerEmail ? findAccountIdByEmail(customerEmail) : null);
+
+      const resolvedProduct = resolvePlanFromProductId(subData?.product_id);
+      const metaPlan = meta.plan === 'pro' || meta.plan === 'agency' ? meta.plan : null;
+      const metaCycle = meta.billingCycle === 'monthly' || meta.billingCycle === 'annual' ? meta.billingCycle : undefined;
+      const resolvedPlan: PaidAccountPlan | undefined = resolvedProduct?.plan || metaPlan || undefined;
+      const resolvedCycle: BillingCycle | undefined = resolvedProduct?.billingCycle || metaCycle;
+
+      if (updatedUserId) {
+        if (
+          event.type === 'subscription.active' ||
+          event.type === 'subscription.renewed' ||
+          event.type === 'subscription.plan_changed' ||
+          event.type === 'subscription.unpaused' ||
+          (event.type === 'subscription.updated' && subData?.status === 'active')
+        ) {
+          updateAccountBilling(updatedUserId, {
+            plan: resolvedPlan || 'pro',
+            billingCycle: resolvedCycle,
+            billingStatus: 'active',
+            dodoCustomerId: customerId,
+            dodoSubscriptionId: subId || null,
+          });
+        } else if (event.type === 'subscription.past_due') {
+          updateAccountBilling(updatedUserId, {
+            billingStatus: 'past_due',
+            dodoCustomerId: customerId,
+            dodoSubscriptionId: subId || null,
+          });
+        } else if (
+          event.type === 'subscription.cancelled' ||
+          event.type === 'subscription.expired' ||
+          event.type === 'subscription.failed' ||
+          event.type === 'subscription.on_hold' ||
+          event.type === 'subscription.paused'
+        ) {
+          const statusMap: Record<string, 'cancelled' | 'expired' | 'failed' | 'on_hold' | 'paused'> = {
+            'subscription.cancelled': 'cancelled',
+            'subscription.expired': 'expired',
+            'subscription.failed': 'failed',
+            'subscription.on_hold': 'on_hold',
+            'subscription.paused': 'paused',
+          };
+          updateAccountBilling(updatedUserId, {
+            plan: 'free',
+            billingStatus: statusMap[event.type] || 'cancelled',
+            dodoCustomerId: customerId,
+            dodoSubscriptionId: subId || null,
+          });
+        }
+      }
+    }
+
+    if (eventKey) {
+      markWebhookEventProcessed(eventKey, { type: event.type, userId: updatedUserId });
+    }
+
+    return res.json({ received: true });
+  } catch (err: any) {
+    if (err instanceof BillingConfigError) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    console.warn('[Dodo Webhook] Rejected invalid webhook:', err?.message || err);
+    return res.status(400).json({ error: 'Invalid Dodo webhook signature or payload.' });
+  }
+});
+
 app.use(express.json());
 
 const authAttemptWindow = new Map<string, { count: number; resetAt: number }>();
@@ -271,9 +389,58 @@ app.post('/api/auth/plan', (req, res) => {
   if (plan !== 'free' && plan !== 'pro' && plan !== 'agency') {
     return res.status(400).json({ error: 'Invalid plan selection.' });
   }
-  const user = updateAccountPlan(uid, plan);
+  if (plan !== 'free') {
+    return res.status(402).json({
+      error: 'Paid plans require Dodo Payments checkout before activation.',
+      requiresCheckout: true,
+      checkoutEndpoint: '/api/billing/checkout',
+    });
+  }
+  const user = updateAccountBilling(uid, { plan: 'free', billingStatus: 'cancelled' });
   if (!user) return res.status(401).json({ error: 'Account not found.' });
   return res.json({ user });
+});
+
+app.get('/api/billing/status', (_req, res) => {
+  return res.json(getDodoBillingStatus());
+});
+
+app.post('/api/billing/checkout', async (req, res) => {
+  try {
+    const uid = getAuthenticatedUserId(req);
+    if (!uid) return res.status(401).json({ error: 'Please sign in before starting checkout.' });
+
+    const account = getAccountById(uid);
+    if (!account) return res.status(401).json({ error: 'Account not found.' });
+
+    const plan = req.body?.plan;
+    if (plan !== 'pro' && plan !== 'agency') {
+      return res.status(400).json({ error: 'Please select a valid paid plan (pro or agency).' });
+    }
+
+    const billingCycle: BillingCycle = req.body?.billingCycle === 'annual' ? 'annual' : 'monthly';
+    const host = req.get('host');
+    const originUrl = host ? `${req.protocol}://${host}` : undefined;
+
+    const session = await createDodoCheckoutSession({
+      userId: account.id,
+      email: account.email,
+      name: account.name,
+      plan: plan as PaidAccountPlan,
+      billingCycle,
+      originUrl,
+    });
+
+    return res.json(session);
+  } catch (err: any) {
+    if (err instanceof BillingConfigError) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    console.error('[Dodo Checkout] Error creating session:', err);
+    return res.status(502).json({
+      error: err?.message || 'Could not initialize Dodo Payments checkout session.',
+    });
+  }
 });
 
 app.post('/api/auth/token/rotate', (req, res) => {

@@ -268,6 +268,15 @@ export default function App() {
   const bentoCardRefs = useRef<Array<HTMLDivElement | null>>([]);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register' | null>(null);
+  const [pendingCheckout, setPendingCheckout] = useState<{
+    plan: 'pro' | 'agency';
+    billingCycle: 'monthly' | 'annual';
+  } | null>(null);
+  const [checkoutBusyPlan, setCheckoutBusyPlan] = useState<AccountPlan | null>(null);
+  const [checkoutBanner, setCheckoutBanner] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
   const [showAccountPage, setShowAccountPage] = useState(false);
   const isPricingLocation = (pathname: string, search: string) =>
     pathname.replace(/\/+$/, '') === '/pricing' ||
@@ -356,9 +365,31 @@ export default function App() {
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!active) return;
-        const wantsAccountPage =
-          typeof window !== 'undefined' &&
-          new URLSearchParams(window.location.search).get('page') === 'account';
+        const params =
+          typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+        const wantsAccountPage = params?.get('page') === 'account';
+        const checkoutParam = params?.get('checkout');
+        const checkoutPlan = params?.get('plan');
+
+        if (checkoutParam === 'success') {
+          const label = checkoutPlan === 'agency' ? 'Team & Agency' : 'Pro Security';
+          setCheckoutBanner({
+            type: 'success',
+            message: `Thank you! Your ${label} checkout is complete. Your plan & quotas activate automatically as soon as Dodo confirms the webhook.`,
+          });
+        }
+
+        if (params && (params.has('checkout') || params.has('payment_id') || params.has('subscription_id'))) {
+          params.delete('checkout');
+          params.delete('plan');
+          params.delete('cycle');
+          params.delete('payment_id');
+          params.delete('subscription_id');
+          params.delete('status');
+          const qs = params.toString();
+          window.history.replaceState({}, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+        }
+
         if (data?.user) {
           setCurrentUser(data.user);
           if (wantsAccountPage) setShowAccountPage(true);
@@ -458,24 +489,78 @@ export default function App() {
     }, 60);
   };
 
-  const handleSelectPlan = async (plan: AccountPlan) => {
-    if (!currentUser) {
-      setAuthModalMode('register');
-      return;
-    }
+  const startDodoCheckout = async (
+    plan: 'pro' | 'agency',
+    billingCycle: 'monthly' | 'annual' = 'monthly'
+  ) => {
+    setCheckoutBusyPlan(plan);
+    setCheckoutBanner(null);
     try {
-      const res = await fetch('/api/auth/plan', {
+      const res = await fetch('/api/billing/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ plan }),
+        body: JSON.stringify({ plan, billingCycle }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.user) setCurrentUser(data.user);
-        openAccountPage();
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.checkoutUrl) {
+        window.location.href = data.checkoutUrl;
+        return;
       }
-    } catch {}
+      setCheckoutBanner({
+        type: 'error',
+        message:
+          data?.error ||
+          'Online Dodo checkout could not be started right now. Please try again shortly.',
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {
+      setCheckoutBanner({
+        type: 'error',
+        message: 'Network error while initializing Dodo Payments checkout.',
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } finally {
+      setCheckoutBusyPlan(null);
+    }
+  };
+
+  const handleSelectPlan = async (
+    plan: AccountPlan,
+    billingCycle: 'monthly' | 'annual' = 'monthly'
+  ) => {
+    if (plan === 'free') {
+      if (!currentUser) {
+        setAuthModalMode('register');
+        return;
+      }
+      if (currentUser.plan === 'free') {
+        openAccountPage();
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ plan: 'free' }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.user) setCurrentUser(data.user);
+          openAccountPage();
+        }
+      } catch {}
+      return;
+    }
+
+    if (!currentUser) {
+      setPendingCheckout({ plan, billingCycle });
+      setAuthModalMode('register');
+      return;
+    }
+
+    await startDodoCheckout(plan, billingCycle);
   };
 
   const handleLogout = async () => {
@@ -1209,6 +1294,24 @@ export default function App() {
 
       {/* ── Main Interactive Workspace ── */}
       <main className="flex-1 max-w-5xl mx-auto w-full p-4 sm:p-8 flex flex-col gap-10 relative z-10">
+        {checkoutBanner && (
+          <div
+            className={`rounded-2xl px-4 py-3 border flex items-center justify-between gap-3 text-xs font-medium ${
+              checkoutBanner.type === 'success'
+                ? 'bg-emerald-500/10 border-emerald-400/35 text-emerald-200'
+                : 'bg-amber-500/10 border-amber-400/35 text-amber-200'
+            }`}
+          >
+            <span>{checkoutBanner.message}</span>
+            <button
+              type="button"
+              onClick={() => setCheckoutBanner(null)}
+              className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-bold cursor-pointer shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {/* ── Dedicated Full-Page Profile & Account Workspace ── */}
         {showAccountPage && currentUser && (
           <AccountPage
@@ -1233,6 +1336,7 @@ export default function App() {
           <PricingPage
             currentUser={currentUser}
             onSelectPlan={handleSelectPlan}
+            checkoutBusyPlan={checkoutBusyPlan}
             onBack={() => closePricingPage(true)}
             onOpenLegal={(doc) => openTrustModal(doc)}
           />
@@ -1722,6 +1826,7 @@ export default function App() {
             <HomepageSections
               currentUser={currentUser}
               onSelectPlan={handleSelectPlan}
+              checkoutBusyPlan={checkoutBusyPlan}
               onStartAudit={(mode) => navigateSection('scanner-command', mode)}
               onOpenLegal={(doc) => openTrustModal(doc)}
               onOpenPricingPage={openPricingPage}
@@ -2817,8 +2922,19 @@ export default function App() {
       {authModalMode && (
         <AuthModal
           initialMode={authModalMode}
-          onClose={() => setAuthModalMode(null)}
-          onSuccess={(user) => setCurrentUser(user)}
+          onClose={() => {
+            setAuthModalMode(null);
+            setPendingCheckout(null);
+          }}
+          onSuccess={(user) => {
+            setCurrentUser(user);
+            setAuthModalMode(null);
+            if (pendingCheckout) {
+              const next = pendingCheckout;
+              setPendingCheckout(null);
+              void startDodoCheckout(next.plan, next.billingCycle);
+            }
+          }}
         />
       )}
 
