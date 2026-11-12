@@ -59,6 +59,7 @@ interface SecurityReport {
     high: number;
     medium: number;
     low: number;
+    info?: number;
     pass: number;
   };
   findings: any[];
@@ -240,7 +241,7 @@ export default function App() {
       const currentTypes = Array.from(
         new Set(
           findingsList
-            .filter((f) => f && f.severity !== 'PASS' && typeof f.type === 'string')
+            .filter((f) => f && f.severity !== 'PASS' && f.severity !== 'INFO' && typeof f.type === 'string')
             .map((f) => `${f.severity}:${f.type}`)
         )
       ).slice(0, 60);
@@ -616,8 +617,8 @@ export default function App() {
 
   const filteredFindings =
     report?.findings.filter((f) => {
-      if (filter === 'vulns') return f.severity !== 'PASS';
-      if (filter === 'pass') return f.severity === 'PASS';
+      if (filter === 'vulns') return f.severity !== 'PASS' && f.severity !== 'INFO';
+      if (filter === 'pass') return f.severity === 'PASS' || f.severity === 'INFO';
       return true;
     }) || [];
 
@@ -1804,7 +1805,7 @@ export default function App() {
             </div>
 
             {/* 🛠️ Master Remediation Playbook (Web Only) */}
-            {!report.isApkAudit && report.findings.filter((f) => f.severity !== 'PASS').length > 0 && (
+            {!report.isApkAudit && report.findings.filter((f) => f.severity !== 'PASS' && f.severity !== 'INFO').length > 0 && (
               <div className="glass-panel border-emerald-500/30 rounded-3xl p-5 space-y-4 shadow-xl">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -1871,7 +1872,7 @@ export default function App() {
                       : 'text-slate-400 hover:text-slate-200 bg-white/[0.03] border border-white/5'
                   }`}
                 >
-                  Vulnerabilities ({report.findings.filter((f) => f.severity !== 'PASS').length})
+                  Vulnerabilities ({report.findings.filter((f) => f.severity !== 'PASS' && f.severity !== 'INFO').length})
                 </button>
                 <button
                   onClick={() => setFilter('pass')}

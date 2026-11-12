@@ -1,13 +1,26 @@
 export interface HeaderFinding {
   type: string;
-  severity: 'HIGH' | 'MEDIUM' | 'LOW' | 'PASS';
+  severity: 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO' | 'PASS';
   proof: string;
   description: string;
   remediation: string;
   owaspRef?: string;
 }
 
-export function scanSecurityHeaders(headers: Record<string, any>): HeaderFinding[] {
+function splitSetCookieValues(rawSetCookie: any): string[] {
+  if (Array.isArray(rawSetCookie)) {
+    return rawSetCookie.map((c) => String(c).trim()).filter(Boolean);
+  }
+  const str = String(rawSetCookie || '').trim();
+  if (!str) return [];
+  // Split comma-joined Set-Cookie headers only when followed by "<cookieName>=", preserving Expires=Thu, 01 Jan...
+  return str
+    .split(/,\s*(?=[!#$%&'*+\-.^_`|~0-9A-Za-z]+=)/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export function scanSecurityHeaders(headers: Record<string, any>, options?: { html?: string }): HeaderFinding[] {
   const findings: HeaderFinding[] = [];
   const normalized: Record<string, string> = {};
 
@@ -15,24 +28,40 @@ export function scanSecurityHeaders(headers: Record<string, any>): HeaderFinding
     normalized[k.toLowerCase()] = Array.isArray(headers[k]) ? headers[k].join('\n') : String(headers[k]);
   }
 
-  // 1. Content-Security-Policy (CSP)
-  if (!normalized['content-security-policy']) {
-    findings.push({
-      type: 'Missing Content-Security-Policy (CSP)',
-      severity: 'MEDIUM',
-      owaspRef: 'OWASP-A05',
-      proof: 'Header "Content-Security-Policy" is absent in server response.',
-      description: 'Without a CSP header, malicious XSS payloads or third-party script injections can execute unchecked in the user browser.',
-      remediation: "Set a strong CSP header, e.g. Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; object-src 'none';"
-    });
-  } else {
+  const enforcedCsp = normalized['content-security-policy'] || '';
+  const reportOnlyCsp = normalized['content-security-policy-report-only'] || '';
+  const metaCspMatch = options?.html
+    ? options.html.match(/<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/i)
+    : null;
+
+  // 1. Content-Security-Policy (CSP) — check enforced header, <meta>, and Report-Only mode
+  if (enforcedCsp || metaCspMatch) {
+    const proofSource = enforcedCsp ? enforcedCsp.slice(0, 72) : metaCspMatch![0].slice(0, 72);
     findings.push({
       type: 'Content-Security-Policy (CSP) Active',
       severity: 'PASS',
       owaspRef: 'OWASP-A05',
-      proof: normalized['content-security-policy'].slice(0, 60) + '...',
-      description: 'Server provides a Content-Security-Policy restricting unauthorized script executions.',
+      proof: `${proofSource}...`,
+      description: 'Server provides an enforced Content-Security-Policy restricting unauthorized script executions.',
       remediation: 'Keep your CSP directives updated and minimize unsafe-inline usage.'
+    });
+  } else if (reportOnlyCsp) {
+    findings.push({
+      type: 'Content-Security-Policy Running in Report-Only Mode',
+      severity: 'INFO',
+      owaspRef: 'OWASP-A05',
+      proof: `Content-Security-Policy-Report-Only: ${reportOnlyCsp.slice(0, 72)}...`,
+      description: 'A Content-Security-Policy-Report-Only header is present, meaning violations are monitored without blocking script execution yet.',
+      remediation: 'Once violation telemetry looks clean, promote Content-Security-Policy-Report-Only to enforced Content-Security-Policy.'
+    });
+  } else {
+    findings.push({
+      type: 'Missing Content-Security-Policy (CSP)',
+      severity: 'MEDIUM',
+      owaspRef: 'OWASP-A05',
+      proof: 'Header "Content-Security-Policy" and Report-Only policy are absent in server response.',
+      description: 'Without a CSP header, malicious XSS payloads or third-party script injections can execute unchecked in the user browser.',
+      remediation: "Set a strong CSP header, e.g. Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; object-src 'none';"
     });
   }
 
@@ -84,7 +113,7 @@ export function scanSecurityHeaders(headers: Record<string, any>): HeaderFinding
   }
 
   // 5. X-Content-Type-Options
-  if (normalized['x-content-type-options'] !== 'nosniff') {
+  if (!String(normalized['x-content-type-options'] || '').toLowerCase().includes('nosniff')) {
     findings.push({
       type: 'Missing X-Content-Type-Options',
       severity: 'LOW',
@@ -95,21 +124,61 @@ export function scanSecurityHeaders(headers: Record<string, any>): HeaderFinding
     });
   }
 
-  // 6. Insecure Set-Cookie Flags (if server sets cookies)
+  // 6. Insecure Set-Cookie Flags (parse comma-joined cookies accurately & distinguish __Secure-/non-auth cookies)
   const rawSetCookie = headers['set-cookie'];
   if (rawSetCookie) {
-    const cookies = Array.isArray(rawSetCookie) ? rawSetCookie : [String(rawSetCookie)];
-    const weakCookies = cookies.filter(c => {
-      const lc = c.toLowerCase();
-      return !lc.includes('httponly') || !lc.includes('secure');
-    });
-    if (weakCookies.length > 0) {
+    const cookies = splitSetCookieValues(rawSetCookie);
+    const AUTH_COOKIE_RE = /(?:^__Host-|session|sess|sid|auth|token|jwt|refresh|login|passwd|xsrf|csrf)/i;
+    const TELEMETRY_COOKIE_RE = /^(?:__Secure-(?:STRP|ENID|1PSID|3PSID|PAPISID)|AEC|NID|SOCS|CONSENT|_ga|_gid|_fbp|_gcl)/i;
+
+    const authWeak: Array<{ name: string; missing: string[] }> = [];
+    const clientReadableSecure: string[] = [];
+
+    for (const raw of cookies) {
+      const segments = raw.split(';').map((s) => s.trim());
+      const nameVal = segments[0] || '';
+      const eqIdx = nameVal.indexOf('=');
+      const cookieName = (eqIdx > 0 ? nameVal.slice(0, eqIdx) : nameVal).trim();
+      if (!cookieName) continue;
+
+      const attrSet = new Set(segments.slice(1).map((s) => s.toLowerCase()));
+      const isSecurePrefix = /^__(?:Secure|Host)-/i.test(cookieName);
+      const hasSecure = attrSet.has('secure') || isSecurePrefix;
+      const hasHttpOnly = attrSet.has('httponly');
+
+      const missing: string[] = [];
+      if (!hasSecure) missing.push('Secure');
+      if (!hasHttpOnly) missing.push('HttpOnly');
+      if (missing.length === 0) continue;
+
+      const isExplicitAuth = AUTH_COOKIE_RE.test(cookieName);
+      const isTelemetry = TELEMETRY_COOKIE_RE.test(cookieName);
+
+      if (!hasSecure || (isExplicitAuth && !isTelemetry)) {
+        authWeak.push({ name: cookieName.slice(0, 48), missing });
+      } else {
+        // Non-auth / __Secure- telemetry cookie with Secure present, intentionally readable by JS
+        clientReadableSecure.push(cookieName.slice(0, 48));
+      }
+    }
+
+    if (authWeak.length > 0) {
+      const sample = authWeak[0];
       findings.push({
-        type: 'Insecure Session Cookie Flags (Missing HttpOnly / Secure)',
+        type: `Insecure Session Cookie Flags (Missing ${sample.missing.join(' & ')})`,
         severity: 'MEDIUM',
-        proof: `Set-Cookie missing HttpOnly or Secure attribute: ${weakCookies[0].split(';')[0]}`,
-        description: 'Cookies lacking HttpOnly can be stolen via XSS, while cookies lacking Secure can be intercepted over unencrypted HTTP.',
-        remediation: 'Set all auth/session cookies with HttpOnly; Secure; SameSite=Lax (or Strict).',
+        proof: `Cookie "${sample.name}" missing ${sample.missing.join(' and ')} flag(s) (${authWeak.length} cookie(s) checked).`,
+        description: 'Cookies lacking HttpOnly can be read by XSS scripts, while cookies lacking Secure can be transmitted over cleartext HTTP.',
+        remediation: 'Set sensitive/session cookies with HttpOnly; Secure; SameSite=Lax (or Strict).',
+        owaspRef: 'OWASP-A07'
+      });
+    } else if (clientReadableSecure.length > 0) {
+      findings.push({
+        type: 'Client-Readable Secure Cookies Present (No HttpOnly)',
+        severity: 'INFO',
+        proof: `Cookies "${clientReadableSecure.slice(0, 3).join(', ')}" carry Secure/__Secure- transport protection without HttpOnly (common for non-session client/CSRF state).`,
+        description: 'Transport encryption (Secure) is active, though JavaScript can read these non-session cookies.',
+        remediation: 'If any of these cookies store authentication credentials or session tokens, add the HttpOnly attribute.',
         owaspRef: 'OWASP-A07'
       });
     }

@@ -170,8 +170,9 @@ app.post('/api/scan', async (req, res) => {
       initialRes = await axios.get(targetUrl, {
         timeout: 9000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 CheckMyAPK-Auditor/1.0',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
         },
         maxRedirects: 3,
         validateStatus: () => true
@@ -238,7 +239,7 @@ app.post('/api/scan', async (req, res) => {
     const [keyResult, artifactFindings, headerFindings, rateLimitFinding] = await Promise.all([
       scanForLeakedKeys(scriptUrls),
       scanSensitiveWebArtifacts(targetUrl, scriptUrls),
-      Promise.resolve(scanSecurityHeaders(headers)),
+      Promise.resolve(scanSecurityHeaders(headers, { html })),
       probeRateLimiting(targetUrl, { burstCount: rateBurstCount, verifiedMode: verifiedOrLocal })
     ]);
 
@@ -284,7 +285,7 @@ app.post('/api/scan', async (req, res) => {
     }
 
     log(`Inspected ${keyResult.totalLinesInspected} lines of code (${(keyResult.totalBytesScanned / 1024).toFixed(1)} KB)`);
-    log(`Found ${keyResult.findings.length + artifactFindings.length} leaked secret/artifact alerts, ${headerFindings.filter(h => h.severity !== 'PASS').length} header flags`);
+    log(`Found ${keyResult.findings.length + artifactFindings.length} leaked secret/artifact alerts, ${headerFindings.filter(h => h.severity !== 'PASS' && h.severity !== 'INFO').length} header flags`);
 
     // Aggregate Findings
     const allFindings = [

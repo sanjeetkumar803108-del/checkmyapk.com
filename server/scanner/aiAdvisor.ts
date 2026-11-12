@@ -69,17 +69,18 @@ function buildDeterministicWebSummary(
   findings: any[],
   meta: { serverHeader?: string; scriptsCount: number; detectedTech: string[] }
 ): string {
-  const vulns = findings.filter(f => f.severity !== 'PASS');
+  const vulns = findings.filter(f => f.severity !== 'PASS' && f.severity !== 'INFO');
   const criticals = vulns.filter(f => f.severity === 'CRITICAL');
   const highs = vulns.filter(f => f.severity === 'HIGH');
   const topVuln = criticals[0] || highs[0] || vulns[0];
   const stackLabel = meta.detectedTech.length > 0 ? meta.detectedTech.join(', ') : 'Custom Web App';
+  const uniqueTopTypes = Array.from(new Set(vulns.map(v => String(v.type)))).slice(0, 3);
 
   if (vulns.length === 0) {
     return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackLabel}) passed all ${findings.length} automated web security probes across ${meta.scriptsCount} JS bundles with zero critical or high exposures.\n2. 🚨 PRIMARY ATTACK VECTOR: Client-side bundle inspection and HTTP header enforcement look hardened; remain vigilant on authenticated server API endpoints.\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: Keep CSP policies strict without 'unsafe-eval', and audit backend API routes individually for IDOR/BOLA authorization.`;
   }
 
-  return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackLabel}${meta.serverHeader ? `, ${meta.serverHeader}` : ''}) exposed ${vulns.length} security issues (${criticals.length} Critical, ${highs.length} High) across ${meta.scriptsCount} audited JS bundles.\n2. 🚨 PRIMARY ATTACK VECTOR: Highest priority weakness is "${topVuln.type}" (${topVuln.severity}) — ${topVuln.description}\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: (1) Resolve "${topVuln.type}" immediately using the copy-paste config below; (2) Apply the 60-Second Master Security Headers block (${vulns.slice(0, 3).map(v => v.type).join(', ')}); (3) Re-run CheckMyAPK to confirm score uplift.`;
+  return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackLabel}${meta.serverHeader ? `, ${meta.serverHeader}` : ''}) exposed ${vulns.length} security issue(s) (${criticals.length} Critical, ${highs.length} High) across ${meta.scriptsCount} audited JS bundles.\n2. 🚨 PRIMARY ATTACK VECTOR: Highest priority weakness is "${topVuln.type}" (${topVuln.severity}) — ${topVuln.description}\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: (1) Resolve "${topVuln.type}" immediately using the copy-paste config below; (2) Address top priorities (${uniqueTopTypes.join(', ')}); (3) Re-run CheckMyAPK to confirm score uplift.`;
 }
 
 function buildDeterministicMobileSummary(

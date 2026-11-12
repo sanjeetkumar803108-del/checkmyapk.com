@@ -19,7 +19,7 @@ import {
 export interface FindingProps {
   category: string;
   type: string;
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'PASS';
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO' | 'PASS';
   proof: string;
   description: string;
   remediation: string;
@@ -34,7 +34,7 @@ interface FindingCardProps {
 }
 
 function getPlayComplianceTag(finding: FindingProps): string | null {
-  if (finding.severity === 'PASS') return null;
+  if (finding.severity === 'PASS' || finding.severity === 'INFO') return null;
   const ref = String(finding.owaspRef || '');
   const t = String(finding.type || '');
   if (t.includes('Play Console') || t.includes('Target SDK') || t.includes('Tapjacking')) {
@@ -508,7 +508,7 @@ export const FindingCard: React.FC<FindingCardProps> = ({
   targetUrl = '',
   defaultExpanded = false
 }) => {
-  const isPass = finding.severity === 'PASS';
+  const isPass = finding.severity === 'PASS' || finding.severity === 'INFO';
   const [expanded, setExpanded] = useState(defaultExpanded || (!isPass && finding.severity === 'CRITICAL'));
   const [copied, setCopied] = useState(false);
 
@@ -534,6 +534,10 @@ export const FindingCard: React.FC<FindingCardProps> = ({
   if (finding.severity === 'LOW') {
     badgeStyle = 'bg-blue-500/15 text-blue-400 border-blue-500/30';
     leftAccent = 'border-l-blue-500';
+  }
+  if (finding.severity === 'INFO') {
+    badgeStyle = 'bg-slate-500/15 text-slate-300 border-slate-500/30';
+    leftAccent = 'border-l-slate-400';
   }
   if (finding.severity === 'PASS') {
     badgeStyle = 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';

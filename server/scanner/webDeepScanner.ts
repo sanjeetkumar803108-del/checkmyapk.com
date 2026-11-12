@@ -3,7 +3,7 @@ import axios from 'axios';
 export interface WebDeepFinding {
   category: string;
   type: string;
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'PASS';
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO' | 'PASS';
   proof: string;
   description: string;
   remediation: string;
@@ -12,7 +12,7 @@ export interface WebDeepFinding {
 
 export interface DomSinkHit {
   type: string;
-  severity: 'HIGH' | 'MEDIUM';
+  severity: 'HIGH' | 'MEDIUM' | 'INFO';
   fileUrl: string;
   snippet: string;
   taintedByInput: boolean;
@@ -296,6 +296,15 @@ function compactSnippet(raw: string, maxLen = 88): string {
   return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}...` : cleaned;
 }
 
+function isMinifiedOrVendorBundle(scriptUrl: string, content: string): boolean {
+  if (/(?:gstatic\.com|googleapis\.com|cdnjs\.|jsdelivr\.net|unpkg\.com|recaptcha)/i.test(scriptUrl)) {
+    return true;
+  }
+  const lineCount = content.split('\n').length;
+  const avgLineLen = content.length / Math.max(1, lineCount);
+  return content.length > 3500 && avgLineLen > 240;
+}
+
 export function scanDomXssSinks(
   html: string,
   collectedScripts: Array<{ url: string; content: string }>,
@@ -389,6 +398,9 @@ export function scanDomXssSinks(
     if (/googletagmanager|google-analytics|gtag|fbevents|hotjar|clarity\.ms/i.test(src.url)) continue;
 
     const text = src.content;
+    const isMinifiedVendor = isMinifiedOrVendorBundle(src.url, text);
+    const usesTrustedTypes = /trustedTypes\s*\.\s*createPolicy/i.test(text);
+
     for (const rule of sinkRules) {
       const rx = new RegExp(rule.regex.source, rule.regex.flags);
       let hitsInScript = 0;
@@ -401,6 +413,18 @@ export function scanDomXssSinks(
         const idx = m.index ?? 0;
         const ctxWindow = text.slice(Math.max(0, idx - 220), Math.min(text.length, idx + 260));
         const taintedByInput = TAINT_INPUT_HINT.test(ctxWindow);
+
+        // Suppress minified/vendor/Trusted-Types untainted .innerHTML=b / eval(b) false positives
+        if (
+          !taintedByInput &&
+          (isMinifiedVendor || usesTrustedTypes) &&
+          (rule.label === 'innerHTML / document.write' ||
+            rule.label === 'eval / new Function' ||
+            rule.label === 'dangerouslySetInnerHTML')
+        ) {
+          continue;
+        }
+
         const snippet = compactSnippet(fullMatch);
         const dedup = `${rule.label}|${src.url}|${snippet.slice(0, 40)}`;
         if (seenKeys.has(dedup)) continue;
@@ -410,7 +434,7 @@ export function scanDomXssSinks(
         const hit: DomSinkHit = {
           type: rule.label,
           severity: taintedByInput ? 'HIGH' : 'MEDIUM',
-          fileUrl: src.url,
+          fileUrl: compactSnippet(src.url, 100),
           snippet,
           taintedByInput
         };
@@ -432,7 +456,7 @@ export function scanDomXssSinks(
       type: findingType,
       severity: anyTainted ? 'HIGH' : 'MEDIUM',
       owaspRef: 'OWASP-A03',
-      proof: `Detected ${hits.length} sink occurrence(s), e.g. in ${first.fileUrl} -> "${first.snippet}"${
+      proof: `Detected ${hits.length} sink occurrence(s), e.g. in ${compactSnippet(first.fileUrl, 96)} -> "${first.snippet}"${
         anyTainted ? ' [Input Source Reachable Nearby]' : ''
       }`,
       description:
@@ -443,6 +467,10 @@ export function scanDomXssSinks(
   }
 
   return { domSinks, findings };
+}
+
+function compactUrlPath(p: string, maxLen = 110): string {
+  return p.length > maxLen ? `${p.slice(0, maxLen - 3)}...` : p;
 }
 
 function extractStaticRoutesAndApis(
@@ -465,7 +493,7 @@ function extractStaticRoutesAndApis(
   // Extract relative API / GraphQL / v1..v3 paths inside JS strings & HTML
   const apiRegex = /["'`](\/(?:api|v[1-3]|graphql|gql|rest)(?:\/[a-zA-Z0-9._:{}-]+){0,5})["'`]/g;
   for (const m of combined.matchAll(apiRegex)) {
-    const p = m[1];
+    const p = compactUrlPath(m[1], 110);
     if (!p || STATIC_EXT_RE.test(p) || p.includes('node_modules')) continue;
     if (p.toLowerCase().includes('graphql') || p === '/gql') {
       gqlSet.add(p);
@@ -480,8 +508,9 @@ function extractStaticRoutesAndApis(
     try {
       const parsed = new URL(m[0]);
       if (parsed.origin === targetOrigin && !STATIC_EXT_RE.test(parsed.pathname)) {
-        if (parsed.pathname.toLowerCase().includes('graphql')) gqlSet.add(parsed.pathname);
-        apiSet.add(parsed.pathname);
+        const cleanPath = compactUrlPath(parsed.pathname, 110);
+        if (cleanPath.toLowerCase().includes('graphql')) gqlSet.add(cleanPath);
+        apiSet.add(cleanPath);
       }
     } catch {}
   }
@@ -492,7 +521,7 @@ function extractStaticRoutesAndApis(
     try {
       const u = new URL(m[1], baseUrl);
       if (u.origin === targetOrigin && !STATIC_EXT_RE.test(u.pathname) && u.pathname !== '/') {
-        routeSet.add(u.pathname);
+        routeSet.add(compactUrlPath(u.pathname, 110));
         if (routeSet.size >= 25) break;
       }
     } catch {}

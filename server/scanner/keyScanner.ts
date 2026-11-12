@@ -78,6 +78,23 @@ const SECRET_PATTERNS = [
   }
 ];
 
+function compactDisplayUrl(rawUrl: string, maxLen = 110): string {
+  if (rawUrl.length <= maxLen) return rawUrl;
+  return `${rawUrl.slice(0, maxLen - 3)}...`;
+}
+
+async function probeGeminiKeyLive(apiKey: string): Promise<boolean> {
+  try {
+    const resp = await axios.get(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {
+      timeout: 2200,
+      validateStatus: () => true
+    });
+    return resp.status === 200;
+  } catch {
+    return false;
+  }
+}
+
 export async function scanForLeakedKeys(scriptUrls: string[]): Promise<KeyScanResult> {
   const findings: LeakedKeyFinding[] = [];
   const checkedKeys = new Set<string>();
@@ -88,6 +105,14 @@ export async function scanForLeakedKeys(scriptUrls: string[]): Promise<KeyScanRe
   const collectedScripts: Array<{ url: string; content: string }> = [];
   let collectedBytes = 0;
   const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
+
+  const googleClientKeys: Array<{
+    key: string;
+    masked: string;
+    url: string;
+    isFirebase: boolean;
+    hasGeminiContext: boolean;
+  }> = [];
 
   await Promise.all(
     scriptUrls.slice(0, 20).map(async (url) => {
@@ -122,32 +147,28 @@ export async function scanForLeakedKeys(scriptUrls: string[]): Promise<KeyScanRe
               ? `${m.slice(0, 8)}...${m.slice(-4)}`
               : `${m.slice(0, 4)}...`;
 
-            let findingName = pat.name;
-            let findingSeverity: LeakedKeyFinding['severity'] = pat.severity;
-            let findingDesc = pat.description;
-            let findingRem = pat.remediation;
-            let findingOwasp = 'OWASP-A02';
-
             if (pat.name.includes('Google Gemini / Cloud')) {
-              const ctx = content.slice(Math.max(0, matchIdx - 220), matchIdx + 220);
-              const isFirebaseClientCfg = /(?:firebaseapp\.com|authDomain|storageBucket|messagingSenderId|firebaseio\.com|firebasedatabase\.app)/i.test(ctx);
-              if (isFirebaseClientCfg) {
-                findingName = 'Firebase Client API Key Detected (Verify GCP Key Restrictions)';
-                findingSeverity = 'LOW';
-                findingOwasp = 'OWASP-A05';
-                findingDesc = 'Firebase Client SDK web apiKey is public by design, but if left unrestricted in Google Cloud Console, attackers can bill Generative AI / Cloud APIs against this key.';
-                findingRem = 'Open Google Cloud Console -> Credentials -> API Key -> Add HTTP Referrer restriction for your domain and restrict APIs strictly to Firebase/Identity Toolkit (exclude Generative Language API).';
-              }
+              const ctx = content.slice(Math.max(0, matchIdx - 240), matchIdx + 240);
+              const isFirebase = /(?:firebaseapp\.com|authDomain|storageBucket|messagingSenderId|firebaseio\.com|firebasedatabase\.app)/i.test(ctx);
+              const hasGeminiContext = /(?:generativelanguage\.googleapis\.com|@google\/genai|GoogleGenerativeAI|gemini-(?:1|2|3)|generateContent)/i.test(ctx);
+              googleClientKeys.push({
+                key: m,
+                masked: maskedProof,
+                url,
+                isFirebase,
+                hasGeminiContext
+              });
+              continue;
             }
 
             findings.push({
-              type: findingName,
-              severity: findingSeverity,
+              type: pat.name,
+              severity: pat.severity,
               fileUrl: url,
-              proof: `Detected in ${url} -> ${maskedProof}`,
-              description: findingDesc,
-              remediation: findingRem,
-              owaspRef: findingOwasp
+              proof: `Detected in ${compactDisplayUrl(url)} -> ${maskedProof}`,
+              description: pat.description,
+              remediation: pat.remediation,
+              owaspRef: 'OWASP-A02'
             });
           }
         }
@@ -156,6 +177,65 @@ export async function scanForLeakedKeys(scriptUrls: string[]): Promise<KeyScanRe
       }
     })
   );
+
+  // Classify & group AIza... keys with optional safe read-only Gemini models.list check
+  if (googleClientKeys.length > 0) {
+    let liveProbeCount = 0;
+    const liveGeminiHits: typeof googleClientKeys = [];
+    const standardClientHits: typeof googleClientKeys = [];
+
+    for (const item of googleClientKeys) {
+      let isLiveGemini = false;
+      if ((item.hasGeminiContext || !item.isFirebase) && liveProbeCount < 2) {
+        liveProbeCount++;
+        isLiveGemini = await probeGeminiKeyLive(item.key);
+      }
+
+      if (isLiveGemini) {
+        liveGeminiHits.push(item);
+      } else if (item.hasGeminiContext) {
+        findings.push({
+          type: 'Google Gemini / AI API Key Pattern in Client Bundle',
+          severity: 'HIGH',
+          fileUrl: item.url,
+          proof: `Detected in ${compactDisplayUrl(item.url)} -> ${item.masked} (Generative AI SDK context nearby)`,
+          description: 'An AIza... key referenced near Generative AI SDK patterns was found in frontend code.',
+          remediation: 'Move Gemini SDK calls strictly to a backend proxy using process.env and restrict this key in Google Cloud Console.',
+          owaspRef: 'OWASP-A02'
+        });
+      } else {
+        standardClientHits.push(item);
+      }
+    }
+
+    if (liveGeminiHits.length > 0) {
+      findings.push({
+        type: 'Live Unrestricted Gemini AI Key Exposed in Client Bundle',
+        severity: 'CRITICAL',
+        fileUrl: liveGeminiHits[0].url,
+        proof: `Verified HTTP 200 on generativelanguage.googleapis.com/v1beta/models for ${liveGeminiHits.map(k => k.masked).join(', ')} (${compactDisplayUrl(liveGeminiHits[0].url)})`,
+        description: 'Live verification confirmed this client-exposed AIza key has active unrestricted access to Gemini / Generative Language APIs, enabling quota hijacking and unexpected billing.',
+        remediation: 'Revoke/rotate this API key immediately in Google Cloud Console, move Gemini calls to your backend server, and apply API + HTTP Referrer restrictions.',
+        owaspRef: 'OWASP-A02'
+      });
+    }
+
+    if (standardClientHits.length > 0) {
+      const anyFirebase = standardClientHits.some(k => k.isFirebase);
+      const uniqueBundles = Array.from(new Set(standardClientHits.map(k => compactDisplayUrl(k.url, 80))));
+      findings.push({
+        type: anyFirebase
+          ? 'Firebase Client API Key Detected (Verify GCP Key Restrictions)'
+          : 'Google Public Client API Key Detected (Verify Referrer & API Restrictions)',
+        severity: 'LOW',
+        fileUrl: standardClientHits[0].url,
+        proof: `Grouped ${standardClientHits.length} public client key(s) (${standardClientHits.map(k => k.masked).slice(0, 3).join(', ')}) across ${uniqueBundles.length} bundle(s): ${uniqueBundles[0]}`,
+        description: 'Google Maps, Firebase, and Search web SDK AIza... keys are designed to be shipped publicly in client bundles, provided HTTP Referrer and API-scope restrictions are enabled in Google Cloud Console.',
+        remediation: 'Open Google Cloud Console -> Credentials -> Edit API Key -> Enable HTTP Referrer restrictions for your production domain and restrict APIs strictly to the required client service (never Generative Language API).',
+        owaspRef: 'OWASP-A05'
+      });
+    }
+  }
 
   return {
     findings,

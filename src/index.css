@@ -108,4 +108,26 @@
     background: #ffffff !important;
     color: #000000 !important;
   }
+  * {
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
+  .truncate {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+  .overflow-y-auto,
+  .overflow-x-auto,
+  .max-h-28,
+  .max-h-32,
+  .max-h-40,
+  .max-h-48 {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  pre {
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+  }
 }
