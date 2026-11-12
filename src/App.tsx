@@ -1840,7 +1840,7 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <ScoreGauge score={report.score} grade={report.grade} riskLevel={report.riskLevel} />
 
-              <div className="md:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3 glass-panel p-5 rounded-3xl">
+              <div className="md:col-span-2 grid grid-cols-2 sm:grid-cols-5 gap-3 glass-panel p-5 rounded-3xl">
                 <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-center flex flex-col items-center justify-center">
                   <span className="text-3xl font-black text-rose-400">{report.summaryCounts.critical}</span>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-rose-300 mt-1">Critical</span>
@@ -1853,13 +1853,17 @@ export default function App() {
                   <span className="text-3xl font-black text-amber-400">{report.summaryCounts.medium}</span>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 mt-1">Medium</span>
                 </div>
+                <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/25 text-center flex flex-col items-center justify-center">
+                  <span className="text-3xl font-black text-blue-400">{report.summaryCounts.low}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300 mt-1">Low Risk</span>
+                </div>
                 <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 text-center flex flex-col items-center justify-center">
                   <span className="text-3xl font-black text-emerald-400">{report.summaryCounts.pass}</span>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 mt-1">Passed</span>
                 </div>
 
                 {report.aiExecutiveSummary && (
-                  <div className="col-span-2 sm:col-span-4 mt-2 p-4 rounded-2xl bg-[#050811]/90 border border-cyan-500/25 text-xs shadow-inner">
+                  <div className="col-span-2 sm:col-span-5 mt-2 p-4 rounded-2xl bg-[#050811]/90 border border-cyan-500/25 text-xs shadow-inner">
                     <div className="flex items-center gap-1.5 text-cyan-400 font-black mb-2">
                       <Sparkles className="w-4 h-4" />
                       <span>

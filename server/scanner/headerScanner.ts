@@ -124,14 +124,15 @@ export function scanSecurityHeaders(headers: Record<string, any>, options?: { ht
     });
   }
 
-  // 6. Insecure Set-Cookie Flags (parse comma-joined cookies accurately & distinguish __Secure-/non-auth cookies)
+  // 6. Insecure Set-Cookie Flags (parse comma-joined cookies accurately & distinguish __Secure-/preference cookies)
   const rawSetCookie = headers['set-cookie'];
   if (rawSetCookie) {
     const cookies = splitSetCookieValues(rawSetCookie);
     const AUTH_COOKIE_RE = /(?:^__Host-|session|sess|sid|auth|token|jwt|refresh|login|passwd|xsrf|csrf)/i;
-    const TELEMETRY_COOKIE_RE = /^(?:__Secure-(?:STRP|ENID|1PSID|3PSID|PAPISID)|AEC|NID|SOCS|CONSENT|_ga|_gid|_fbp|_gcl)/i;
+    const TELEMETRY_COOKIE_RE = /^(?:__Secure-(?:STRP|ENID|1PSID|3PSID|PAPISID)|SEARCH_SAMESITE|AEC|NID|SOCS|CONSENT|PREF|OTZ|UULE|DV|LANG|LOCALE|THEME|_ga|_gid|_fbp|_gcl)/i;
 
     const authWeak: Array<{ name: string; missing: string[] }> = [];
+    const prefNonAuth: Array<{ name: string; missing: string[] }> = [];
     const clientReadableSecure: string[] = [];
 
     for (const raw of cookies) {
@@ -152,12 +153,14 @@ export function scanSecurityHeaders(headers: Record<string, any>, options?: { ht
       if (missing.length === 0) continue;
 
       const isExplicitAuth = AUTH_COOKIE_RE.test(cookieName);
-      const isTelemetry = TELEMETRY_COOKIE_RE.test(cookieName);
+      const isPreferenceOrTelemetry = TELEMETRY_COOKIE_RE.test(cookieName);
 
-      if (!hasSecure || (isExplicitAuth && !isTelemetry)) {
+      if (isPreferenceOrTelemetry && !isExplicitAuth) {
+        prefNonAuth.push({ name: cookieName.slice(0, 48), missing });
+      } else if (!hasSecure || isExplicitAuth) {
         authWeak.push({ name: cookieName.slice(0, 48), missing });
       } else {
-        // Non-auth / __Secure- telemetry cookie with Secure present, intentionally readable by JS
+        // Non-auth cookie with Secure/__Secure- present, intentionally readable by JS
         clientReadableSecure.push(cookieName.slice(0, 48));
       }
     }
@@ -170,6 +173,15 @@ export function scanSecurityHeaders(headers: Record<string, any>, options?: { ht
         proof: `Cookie "${sample.name}" missing ${sample.missing.join(' and ')} flag(s) (${authWeak.length} cookie(s) checked).`,
         description: 'Cookies lacking HttpOnly can be read by XSS scripts, while cookies lacking Secure can be transmitted over cleartext HTTP.',
         remediation: 'Set sensitive/session cookies with HttpOnly; Secure; SameSite=Lax (or Strict).',
+        owaspRef: 'OWASP-A07'
+      });
+    } else if (prefNonAuth.length > 0) {
+      findings.push({
+        type: `Non-Auth Preference Cookie Detected (${prefNonAuth[0].name})`,
+        severity: 'INFO',
+        proof: `Preference/telemetry cookie(s) "${prefNonAuth.map(p => p.name).slice(0, 3).join(', ')}" omit ${prefNonAuth[0].missing.join(' / ')} — typical for UI/localization preferences rather than auth sessions.`,
+        description: 'Non-authentication preference cookies do not expose user credentials, though sensitive cookies should always enforce Secure + HttpOnly.',
+        remediation: 'Confirm these cookies store zero PII/session tokens; add Secure flag where browser compatibility permits.',
         owaspRef: 'OWASP-A07'
       });
     } else if (clientReadableSecure.length > 0) {
