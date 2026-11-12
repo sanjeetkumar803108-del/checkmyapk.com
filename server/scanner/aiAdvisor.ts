@@ -302,10 +302,30 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
     webCode = t.includes('Supabase')
       ? `ALTER TABLE your_table ENABLE ROW LEVEL SECURITY;\nCREATE POLICY "Owner only" ON your_table FOR ALL USING (auth.uid() = user_id);`
       : `rules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /users/{userId} { allow read, write: if request.auth != null && request.auth.uid == userId; }\n  }\n}`;
-  } else if (t.includes('CORS')) {
-    webFilename = 'server.ts (CORS Whitelist)';
+  } else if (t.includes('Dynamic CORS Origin Reflection') || t.includes('CORS')) {
+    webFilename = 'server.ts (Explicit CORS Origin Allowlist)';
     webLang = 'typescript';
-    webCode = `const ALLOWED = new Set(['https://yourdomain.com']);\napp.use(cors({ origin: (o, cb) => cb(null, !o || ALLOWED.has(o)), credentials: true }));`;
+    webBefore = `app.use(cors({ origin: true, credentials: true })); // Reflects ANY attacker Origin header!`;
+    webCode = `const ALLOWED_ORIGINS = new Set(['https://yourdomain.com', 'https://app.yourdomain.com']);\napp.use(cors({\n  origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.has(origin)),\n  credentials: true\n}));`;
+    verifyCmd = `curl -I -H "Origin: https://evil-attacker.example" ${targetUrl}`;
+  } else if (t.includes('SSL/TLS Certificate') || t.includes('TLS Protocol')) {
+    webFilename = '/etc/nginx/sites-available/ssl.conf';
+    webLang = 'bash';
+    webBefore = `ssl_protocols TLSv1 TLSv1.1 TLSv1.2;`;
+    webCode = `ssl_protocols TLSv1.2 TLSv1.3;\nssl_prefer_server_ciphers on;\n# Renew / verify automated certbot certificate:\nsudo certbot renew --nginx`;
+    verifyCmd = `openssl s_client -connect ${targetUrl.replace(/^https?:\/\//, '').split('/')[0]}:443 -tls1_3`;
+  } else if (t.includes('SPF') || t.includes('DMARC')) {
+    webFilename = 'DNS TXT Records (Cloudflare / Route53)';
+    webLang = 'bash';
+    webBefore = `# Missing SPF and DMARC TXT records -> domain can be spoofed in phishing emails`;
+    webCode = `# 1. Root domain TXT record (SPF):\nTXT  @       "v=spf1 -all"\n# 2. _dmarc subdomain TXT record (DMARC enforcement):\nTXT  _dmarc  "v=DMARC1; p=quarantine; adkim=s; aspf=s; rua=mailto:security@yourdomain.com"`;
+    verifyCmd = `nslookup -type=TXT _dmarc.${targetUrl.replace(/^https?:\/\//, '').split('/')[0]}`;
+  } else if (t.includes('Subresource Integrity') || t.includes('Outdated')) {
+    webFilename = 'index.html / package.json (SRI + Dependency Upgrade)';
+    webLang = 'javascript';
+    webBefore = `<script src="https://cdn.jsdelivr.net/npm/jquery@3.4.1/dist/jquery.min.js"></script>`;
+    webCode = `<!-- 1. Upgrade library to latest patched version & pin SRI integrity hash: -->\n<script\n  src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"\n  integrity="sha384-1H217gwSVyLSIfaLxHbE7dRb3v4mYCKbpQvzx0cegeju1MVsGrX5xXxAvs/HgeFs"\n  crossorigin="anonymous"></script>`;
+    verifyCmd = `npm audit --production`;
   } else if (t.includes('Key') || t.includes('Secret') || t.includes('MongoDB') || t.includes('Private Cryptographic')) {
     webFilename = '.env + Backend API Proxy';
     webLang = 'typescript';

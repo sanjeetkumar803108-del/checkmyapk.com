@@ -11,6 +11,7 @@ import { probeDatabaseSecurity } from './server/scanner/dbProbe.ts';
 import { probeRateLimiting } from './server/scanner/rateLimitProbe.ts';
 import { computeSecurityScore } from './server/scanner/scoreCalculator.ts';
 import { runWebDeepAudit } from './server/scanner/webDeepScanner.ts';
+import { runNetworkPostureAudit } from './server/scanner/networkPostureScanner.ts';
 import { 
   generateAiSecuritySummary, 
   generateVulnerabilityDeepFix, 
@@ -249,8 +250,9 @@ app.post('/api/scan', async (req, res) => {
       log(`Optional target-origin auth context attached (redacted from logs, same-origin only)...`);
     }
     log(`Scanning JS bundles for DOM XSS sinks, OpenAPI/Swagger, GraphQL introspection & JWT weaknesses...`);
+    log(`Running Dynamic CORS Reflection, SSL/TLS cert, DNS SPF/DMARC & JS Supply-Chain (SRI) posture probes...`);
 
-    const [dbFindings, webDeepResult] = await Promise.all([
+    const [dbFindings, webDeepResult, networkPostureResult] = await Promise.all([
       probeDatabaseSecurity(html, keyResult.collectedScriptContent),
       runWebDeepAudit({
         targetUrl,
@@ -259,6 +261,12 @@ app.post('/api/scan', async (req, res) => {
         collectedScripts: keyResult.collectedScripts,
         authHeader: typeof authHeader === 'string' ? authHeader : undefined,
         authCookie: typeof authCookie === 'string' ? authCookie : undefined
+      }),
+      runNetworkPostureAudit({
+        targetUrl,
+        html,
+        isLoopback: ssrfCheck.isLoopback,
+        collectedScripts: keyResult.collectedScripts
       })
     ]);
 
@@ -269,6 +277,12 @@ app.post('/api/scan', async (req, res) => {
         `${webDeepResult.surface.apiEndpoints.length} API paths, ` +
         `${webDeepResult.surface.domSinks.length} DOM sinks, ` +
         `${webDeepResult.surface.jwtAudits.length} JWT(s) audited`
+    );
+    log(
+      `Network & Supply-Chain Posture: CORS=${networkPostureResult.posture.corsReflection}, ` +
+        `TLS=${networkPostureResult.posture.tlsProtocol || 'HTTP/Local'}, ` +
+        `DMARC=${networkPostureResult.posture.dmarcPolicy || 'none'}, ` +
+        `SRI Missing=${networkPostureResult.posture.missingSriCount}`
     );
 
     const transportFindings: any[] = [];
@@ -295,6 +309,7 @@ app.post('/api/scan', async (req, res) => {
       ...headerFindings.map(f => ({ ...f, category: 'Security Headers & CORS', owaspRef: f.owaspRef || 'OWASP-A05' })),
       ...dbFindings.map(f => ({ ...f, category: 'Database & Cloud Rules', owaspRef: f.owaspRef || 'OWASP-A01' })),
       ...webDeepResult.findings.map(f => ({ ...f, owaspRef: f.owaspRef || 'OWASP-A05' })),
+      ...networkPostureResult.findings.map(f => ({ ...f, owaspRef: f.owaspRef || 'OWASP-A05' })),
       { ...rateLimitFinding, category: 'Rate Limiting & Cost Protection', owaspRef: rateLimitFinding.owaspRef || 'OWASP-API04' }
     ];
 
@@ -322,6 +337,7 @@ app.post('/api/scan', async (req, res) => {
     const enrichedResponse = {
       ...finalReport,
       webDeepSurface: webDeepResult.surface,
+      networkPosture: networkPostureResult.posture,
       domainVerification: {
         verified: ownership.verified,
         method: ownership.method || null,

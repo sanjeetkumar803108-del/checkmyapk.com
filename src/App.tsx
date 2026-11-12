@@ -189,6 +189,17 @@ interface SecurityReport {
     token: string;
     burstProfile: string;
   };
+  networkPosture?: {
+    corsReflection: 'Reflected (Critical)' | 'Reflected (High)' | 'Strict';
+    tlsProtocol: string | null;
+    certDaysRemaining: number | null;
+    certIssuer: string | null;
+    spfPresent: boolean | null;
+    dmarcPolicy: string | null;
+    securityTxtPresent: boolean;
+    missingSriCount: number;
+    outdatedLibraries: string[];
+  };
   telemetry?: {
     latencyMs?: number;
     totalBytesScanned: number;
@@ -232,6 +243,7 @@ export default function App() {
   } | null>(null);
   const [masterTab, setMasterTab] = useState<'vercel' | 'nextjs' | 'express'>('vercel');
   const [masterCopied, setMasterCopied] = useState(false);
+  const [mdCopied, setMdCopied] = useState(false);
 
   const updateScanHistory = (targetKey: string, score: number, findingsList: any[] = []) => {
     try {
@@ -389,26 +401,36 @@ export default function App() {
     URL.revokeObjectURL(urlObj);
   };
 
-  const handleExportMarkdown = () => {
-    if (!report) return;
-    const targetName = report.isApkAudit ? report.apkMeta?.packageName || report.targetUrl : report.targetUrl;
+  const buildMarkdownReport = (r: SecurityReport) => {
+    const targetName = r.isApkAudit ? r.apkMeta?.packageName || r.targetUrl : r.targetUrl;
     const lines = [
       `# CheckMyAPK.com Security Audit Report`,
       `- **Target:** ${targetName}`,
-      `- **Score:** ${report.score}/100 (Grade ${report.grade} • ${report.riskLevel} RISK)`,
-      `- **Timestamp:** ${report.scanTimestamp}`,
-      ...(report.apkMeta?.sha256 ? [`- **APK SHA-256:** \`${report.apkMeta.sha256}\``] : []),
-      ...(report.apkMeta?.obfuscationStatus ? [`- **Obfuscation:** ${report.apkMeta.obfuscationStatus}`] : []),
+      `- **Score:** ${r.score}/100 (Grade ${r.grade} • ${r.riskLevel} RISK)`,
+      `- **Timestamp:** ${r.scanTimestamp}`,
+      ...(r.apkMeta?.sha256 ? [`- **APK SHA-256:** \`${r.apkMeta.sha256}\``] : []),
+      ...(r.apkMeta?.obfuscationStatus ? [`- **Obfuscation:** ${r.apkMeta.obfuscationStatus}`] : []),
+      ...(r.networkPosture
+        ? [
+            `- **Network & Supply-Chain:** CORS Reflection=${r.networkPosture.corsReflection} | TLS=${r.networkPosture.tlsProtocol || 'N/A'} (${r.networkPosture.certDaysRemaining ?? 'N/A'}d left) | DMARC=${r.networkPosture.dmarcPolicy || 'none'} | Missing SRI=${r.networkPosture.missingSriCount}`
+          ]
+        : []),
       ``,
       `## AI Security Brief`,
-      report.aiExecutiveSummary || 'N/A',
+      r.aiExecutiveSummary || 'N/A',
       ``,
-      `## Findings (${report.findings.length})`,
-      ...report.findings.map((f) =>
+      `## Findings (${r.findings.length})`,
+      ...r.findings.map((f) =>
         `### [${f.severity}] ${f.type}${f.owaspRef ? ` (${f.owaspRef})` : ''}\n- **Proof:** \`${f.proof}\`\n- **Impact:** ${f.description}\n- **Fix:** ${f.remediation}\n`
       )
     ];
-    const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+    return { targetName, text: lines.join('\n') };
+  };
+
+  const handleExportMarkdown = () => {
+    if (!report) return;
+    const { targetName, text } = buildMarkdownReport(report);
+    const blob = new Blob([text], { type: 'text/markdown' });
     const urlObj = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = urlObj;
@@ -416,6 +438,14 @@ export default function App() {
     a.download = `checkmyapk-${safeName}-report.md`;
     a.click();
     URL.revokeObjectURL(urlObj);
+  };
+
+  const handleCopyMarkdown = () => {
+    if (!report) return;
+    const { text } = buildMarkdownReport(report);
+    navigator.clipboard.writeText(text);
+    setMdCopied(true);
+    setTimeout(() => setMdCopied(false), 2000);
   };
 
   const masterCodes = {
@@ -685,6 +715,14 @@ export default function App() {
               >
                 <FileText className="w-3.5 h-3.5 text-purple-400" />
                 <span>MD</span>
+              </button>
+              <button
+                onClick={handleCopyMarkdown}
+                title="Copy Markdown Summary for GitHub PR / Slack"
+                className="px-3 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-slate-200 border border-white/10 transition-all hidden md:flex items-center gap-1.5 cursor-pointer"
+              >
+                {mdCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-cyan-300" />}
+                <span>{mdCopied ? 'Copied!' : 'Copy PR'}</span>
               </button>
             </>
           )}
@@ -1329,6 +1367,40 @@ export default function App() {
                           <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/30 font-bold">
                             Auth: {report.webDeepSurface.authAudit.authKind} (HTTP {report.webDeepSurface.authAudit.targetStatus})
                           </span>
+                        )}
+                        {report.networkPosture && (
+                          <>
+                            <span
+                              className={`px-2 py-0.5 rounded-full font-bold border ${
+                                report.networkPosture.corsReflection === 'Strict'
+                                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+                                  : 'bg-rose-500/15 text-rose-300 border-rose-400/30'
+                              }`}
+                            >
+                              CORS Probe: {report.networkPosture.corsReflection}
+                            </span>
+                            {report.networkPosture.tlsProtocol && (
+                              <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 font-bold">
+                                {report.networkPosture.tlsProtocol}
+                                {report.networkPosture.certDaysRemaining !== null
+                                  ? ` (${report.networkPosture.certDaysRemaining}d cert)`
+                                  : ''}
+                              </span>
+                            )}
+                            {report.networkPosture.spfPresent !== null && (
+                              <span
+                                className={`px-2 py-0.5 rounded-full font-bold border ${
+                                  report.networkPosture.spfPresent &&
+                                  (report.networkPosture.dmarcPolicy === 'reject' ||
+                                    report.networkPosture.dmarcPolicy === 'quarantine')
+                                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+                                    : 'bg-amber-500/15 text-amber-300 border-amber-400/30'
+                                }`}
+                              >
+                                SPF:{report.networkPosture.spfPresent ? 'Yes' : 'No'} • DMARC:{report.networkPosture.dmarcPolicy || 'none'}
+                              </span>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>

@@ -359,6 +359,37 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
     };
   }
 
+  if (type.includes('CORS')) {
+    return {
+      express: {
+        filename: 'server.ts (Strict CORS Allowlist)',
+        code: `const ALLOWED_ORIGINS = new Set(['https://yourdomain.com']);\napp.use(cors({\n  origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.has(origin)),\n  credentials: true\n}));`
+      },
+      nginx: {
+        filename: '/etc/nginx/conf.d/cors.conf',
+        code: `# Reject untrusted origins instead of reflecting $http_origin blindly:\nif ($http_origin ~* "^https://(www\\.)?yourdomain\\.com$") {\n  add_header Access-Control-Allow-Origin "$http_origin" always;\n  add_header Access-Control-Allow-Credentials "true" always;\n}`
+      }
+    };
+  }
+
+  if (type.includes('SPF') || type.includes('DMARC') || type.includes('security.txt')) {
+    return {
+      dns: {
+        filename: 'DNS TXT Records + /.well-known/security.txt',
+        code: `# DNS TXT Records:\n@        TXT  "v=spf1 -all"\n_dmarc   TXT  "v=DMARC1; p=quarantine; rua=mailto:security@yourdomain.com"\n\n# /.well-known/security.txt:\nContact: mailto:security@yourdomain.com\nExpires: 2027-12-31T23:59:59.000Z`
+      }
+    };
+  }
+
+  if (type.includes('Subresource Integrity') || type.includes('Outdated')) {
+    return {
+      html: {
+        filename: 'index.html / package.json',
+        code: `<!-- Always attach integrity + crossorigin on external static CDN scripts & upgrade outdated libs: -->\n<script\n  src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"\n  integrity="sha384-..."\n  crossorigin="anonymous"\n></script>\n\n# Run in terminal:\nnpm audit fix`
+      }
+    };
+  }
+
   // ── Web Vulnerabilities Fixes ──
   const isCsp = type.includes('Content-Security-Policy');
   const isHsts = type.includes('Strict-Transport-Security');
