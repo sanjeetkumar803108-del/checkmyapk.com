@@ -107,6 +107,8 @@ interface SecurityReport {
       methodsAnalyzed: number;
       instructionsScanned: number;
       durationMs: number;
+      interproceduralPathsCount?: number;
+      pinningSignals?: string[];
       taintPaths: Array<{
         source: string;
         sink: string;
@@ -114,12 +116,37 @@ interface SecurityReport {
         detail: string;
         severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
         owaspRef: string;
+        hopCount?: number;
+        callChain?: string[];
       }>;
       callGraphHotspots: Array<{
         callerMethod: string;
         calleeSignature: string;
         category: string;
       }>;
+    };
+    nativeElfSummary?: {
+      totalSoFiles: number;
+      uniqueLibrariesCount: number;
+      appLibrariesCount: number;
+      hardeningWeakCount: number;
+      nativeStringsScannedKb: number;
+      libraries: Array<{
+        fileName: string;
+        baseName: string;
+        abi: string;
+        sizeBytes: number;
+        archBits: 32 | 64;
+        isThirdPartyRuntime: boolean;
+        pie: boolean;
+        nx: boolean;
+        stackCanary: boolean;
+        relro: 'FULL' | 'PARTIAL' | 'NONE';
+      }>;
+    };
+    pinningStatus?: {
+      active: boolean;
+      signals: string[];
     };
   };
   telemetry?: {
@@ -1224,20 +1251,31 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 4. Stage 2.5: Dalvik Bytecode Control-Flow & Source-to-Sink Taint Graph */}
+                {/* 4. Stage 2.5: Dalvik Bytecode Control-Flow, Cross-Method Taint & Native ELF Inspection */}
                 {report.isApkAudit && report.apkMeta?.dexBytecodeGraph && (
                   <div className="glass-card p-5 rounded-2xl border border-purple-500/25 space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <Binary className="w-4 h-4 text-purple-400" />
                         <h3 className="text-xs font-black uppercase tracking-wider text-white">
-                          Stage 2.5: Dalvik Bytecode CFG &amp; Taint Graph
+                          Stage 2.5: Dalvik Bytecode CFG &amp; Cross-Method Taint Graph
                         </h3>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono">
                         <span className="px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-400/30 font-bold">
                           {report.apkMeta.dexBytecodeGraph.methodsAnalyzed.toLocaleString()} Methods • {report.apkMeta.dexBytecodeGraph.instructionsScanned.toLocaleString()} Opcodes ({report.apkMeta.dexBytecodeGraph.durationMs}ms)
                         </span>
+                        {report.apkMeta.pinningStatus && (
+                          <span
+                            className={`px-2 py-0.5 rounded-full font-bold border ${
+                              report.apkMeta.pinningStatus.active
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+                                : 'bg-amber-500/15 text-amber-300 border-amber-400/30'
+                            }`}
+                          >
+                            {report.apkMeta.pinningStatus.active ? 'SSL Pinning: Active' : 'SSL Pinning: Not Detected'}
+                          </span>
+                        )}
                         <span
                           className={`px-2 py-0.5 rounded-full font-black border ${
                             report.apkMeta.dexBytecodeGraph.taintPaths.length > 0
@@ -1246,7 +1284,11 @@ export default function App() {
                           }`}
                         >
                           {report.apkMeta.dexBytecodeGraph.taintPaths.length > 0
-                            ? `${report.apkMeta.dexBytecodeGraph.taintPaths.length} Taint Flow(s)`
+                            ? `${report.apkMeta.dexBytecodeGraph.taintPaths.length} Taint Flow(s)${
+                                (report.apkMeta.dexBytecodeGraph.interproceduralPathsCount || 0) > 0
+                                  ? ` (${report.apkMeta.dexBytecodeGraph.interproceduralPathsCount} Multi-Hop)`
+                                  : ''
+                              }`
                             : '0 Taint Leaks'}
                         </span>
                       </div>
@@ -1254,13 +1296,18 @@ export default function App() {
 
                     {report.apkMeta.dexBytecodeGraph.taintPaths.length > 0 && (
                       <div className="space-y-1.5">
-                        {report.apkMeta.dexBytecodeGraph.taintPaths.slice(0, 5).map((tp, idx) => (
+                        {report.apkMeta.dexBytecodeGraph.taintPaths.slice(0, 6).map((tp, idx) => (
                           <div key={idx} className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/25 text-[11px] font-mono">
                             <div className="flex items-center justify-between gap-2 text-rose-300 font-bold">
-                              <span>{tp.source} ➔ {tp.sink}</span>
+                              <span>
+                                {tp.source} ➔ {tp.sink}
+                                {tp.hopCount && tp.hopCount >= 2 ? ` (${tp.hopCount}-Hop Chain)` : ''}
+                              </span>
                               <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/20">{tp.owaspRef}</span>
                             </div>
-                            <div className="text-slate-300 mt-1 break-all">{tp.methodSignature}</div>
+                            <div className="text-slate-300 mt-1 break-all">
+                              {tp.callChain && tp.callChain.length >= 2 ? tp.callChain.join(' ➔ ') : tp.methodSignature}
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1275,6 +1322,43 @@ export default function App() {
                             <div className="text-purple-300 truncate" title={edge.calleeSignature}>↳ {edge.calleeSignature}</div>
                           </div>
                         ))}
+                      </div>
+                    )}
+
+                    {report.apkMeta.nativeElfSummary && report.apkMeta.nativeElfSummary.uniqueLibrariesCount > 0 && (
+                      <div className="pt-2 border-t border-white/10 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] font-black uppercase tracking-wider text-cyan-300">
+                            Native ELF (.so) Binary Matrix ({report.apkMeta.nativeElfSummary.uniqueLibrariesCount} Unique • {report.apkMeta.nativeElfSummary.appLibrariesCount} App Libs • {report.apkMeta.nativeElfSummary.nativeStringsScannedKb} KB Strings)
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                              report.apkMeta.nativeElfSummary.hardeningWeakCount > 0
+                                ? 'bg-amber-500/15 text-amber-300 border-amber-400/30'
+                                : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+                            }`}
+                          >
+                            {report.apkMeta.nativeElfSummary.hardeningWeakCount > 0
+                              ? `${report.apkMeta.nativeElfSummary.hardeningWeakCount} Weak Binary Flag(s)`
+                              : 'PIE / NX / RELRO Hardened'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-32 overflow-y-auto pr-1 text-[10px] font-mono">
+                          {report.apkMeta.nativeElfSummary.libraries.slice(0, 9).map((lib, idx) => (
+                            <div key={idx} className="p-2 rounded-xl bg-[#050811]/80 border border-white/5 flex flex-col gap-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate font-bold text-slate-200" title={lib.fileName}>{lib.baseName}</span>
+                                <span className="text-[9px] text-slate-400 shrink-0">{lib.archBits}b {lib.abi}</span>
+                              </div>
+                              <div className="flex flex-wrap gap-1 text-[9px]">
+                                <span className={`px-1.5 rounded ${lib.pie ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>PIE</span>
+                                <span className={`px-1.5 rounded ${lib.nx ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>NX</span>
+                                <span className={`px-1.5 rounded ${lib.stackCanary ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>Canary</span>
+                                <span className={`px-1.5 rounded ${lib.relro !== 'NONE' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>RELRO:{lib.relro}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>

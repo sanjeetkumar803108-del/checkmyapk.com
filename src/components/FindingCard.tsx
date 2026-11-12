@@ -116,6 +116,33 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
     };
   }
 
+  if (type.includes('Native Library Missing Binary Protections') || type.includes('Native ELF')) {
+    return {
+      cmake: {
+        filename: 'app/src/main/cpp/CMakeLists.txt (NDK Hardening)',
+        code: `# Enforce Stack Canary, Non-Executable Stack (NX), PIE, and Full RELRO:\nset(CMAKE_C_FLAGS "\${CMAKE_C_FLAGS} -fstack-protector-strong -fPIE -D_FORTIFY_SOURCE=2")\nset(CMAKE_CXX_FLAGS "\${CMAKE_CXX_FLAGS} -fstack-protector-strong -fPIE -D_FORTIFY_SOURCE=2")\nset(CMAKE_SHARED_LINKER_FLAGS "\${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,noexecstack -Wl,-z,relro,-z,now")`
+      }
+    };
+  }
+
+  if (type.includes('Certificate Pinning')) {
+    return {
+      xml: {
+        filename: 'res/xml/network_security_config.xml + OkHttp',
+        code: `<!-- 1. Add <pin-set> to res/xml/network_security_config.xml -->\n<domain-config cleartextTrafficPermitted="false">\n  <domain includeSubdomains="true">api.yourapp.com</domain>\n  <pin-set expiration="2027-12-31">\n    <pin digest="SHA-256">PRIMARY_SPKI_BASE64_HASH=</pin>\n    <pin digest="SHA-256">BACKUP_SPKI_BASE64_HASH=</pin>\n  </pin-set>\n</domain-config>\n\n// 2. Or OkHttp CertificatePinner in Kotlin:\nval pinner = CertificatePinner.Builder()\n  .add("api.yourapp.com", "sha256/PRIMARY_SPKI_BASE64_HASH=")\n  .build()`
+      }
+    };
+  }
+
+  if (type.includes('Play Console Restricted Policy Permissions')) {
+    return {
+      manifest: {
+        filename: 'AndroidManifest.xml (<queries> Instead of QUERY_ALL_PACKAGES)',
+        code: `<!-- Remove broad QUERY_ALL_PACKAGES / REQUEST_INSTALL_PACKAGES unless strictly core -->\n<!-- Use targeted package visibility instead: -->\n<queries>\n  <intent>\n    <action android:name="android.intent.action.VIEW" />\n    <data android:scheme="https" />\n  </intent>\n</queries>`
+      }
+    };
+  }
+
   if (
     type.includes('SSL / TLS Certificate Validation Bypass') ||
     type.includes('X509TrustManager') ||

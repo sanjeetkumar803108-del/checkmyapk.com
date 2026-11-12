@@ -135,6 +135,7 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
     t.includes('WebView') ||
     t.includes('Exported') ||
     t.includes('SSL') ||
+    t.includes('Certificate Pinning') ||
     t.includes('Encryption') ||
     t.includes('Keystore') ||
     t.includes('Target SDK') ||
@@ -142,6 +143,10 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
     t.includes('network_security_config') ||
     t.includes('CA Certificates') ||
     t.includes('resources.arsc') ||
+    t.includes('Native Library') ||
+    t.includes('Native ELF') ||
+    t.includes('Cross-Method') ||
+    t.includes('Play Console') ||
     t.includes('Tapjacking');
 
   if (isFirebaseClientKey) {
@@ -191,6 +196,10 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
         'Step 3: "npm run build && npx cap sync android" chalayein taaki plugins manifest se usesCleartextTraffic="true" hat jaye, phir release APK dubara build karein.'
       ];
       code = `// Merge into your EXISTING capacitor.config.ts / .json (keep appId, webDir & plugins!)\n{\n  "server": {\n    "cleartext": false,\n    "androidScheme": "https"\n  },\n  "android": {\n    "allowMixedContent": false,\n    "webContentsDebuggingEnabled": false\n  }\n}`;
+    } else if (t.includes('Certificate Pinning')) {
+      filename = 'res/xml/network_security_config.xml';
+      explanation = `App me SSL/TLS Certificate Pinning active nahi dikh rahi hai (${finding.proof || 'no pin-set / CertificatePinner'}).`;
+      code = `<domain-config cleartextTrafficPermitted="false">\n  <domain includeSubdomains="true">api.yourapp.com</domain>\n  <pin-set expiration="2027-12-31">\n    <pin digest="SHA-256">PRIMARY_SPKI_BASE64_HASH=</pin>\n    <pin digest="SHA-256">BACKUP_SPKI_BASE64_HASH=</pin>\n  </pin-set>\n</domain-config>`;
     } else if (t.includes('Cleartext') || t.includes('CA Certificates') || t.includes('network_security_config') || t.includes('SSL')) {
       filename = 'res/xml/network_security_config.xml';
       explanation = `Network transport flaw "${t}" (${finding.proof || 'TLS/Cleartext config'}) aapke app ke HTTPS/TLS guarantees ko kamzor karta hai.`;
@@ -214,6 +223,11 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
       language = 'groovy';
       explanation = `Release binary me ProGuard/R8 obfuscation missing dikh raha hai (${finding.proof || 'unminified classes'}), jisse JADX-GUI me code seedhe readable milta hai.`;
       code = `buildTypes {\n  release {\n    minifyEnabled true\n    shrinkResources true\n    proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'\n  }\n}`;
+    } else if (t.includes('Native Library') || t.includes('Native ELF')) {
+      filename = 'app/src/main/cpp/CMakeLists.txt';
+      language = 'cmake';
+      explanation = `Compiled C/C++ native shared library (.so) me binary hardening flags missing mile hain (${finding.proof || 'PIE/NX/RELRO/Canary'}).`;
+      code = `set(CMAKE_C_FLAGS "\${CMAKE_C_FLAGS} -fstack-protector-strong -fPIE -D_FORTIFY_SOURCE=2")\nset(CMAKE_CXX_FLAGS "\${CMAKE_CXX_FLAGS} -fstack-protector-strong -fPIE -D_FORTIFY_SOURCE=2")\nset(CMAKE_SHARED_LINKER_FLAGS "\${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,noexecstack -Wl,-z,relro,-z,now")`;
     } else if (t.includes('Secret') || t.includes('resources.arsc')) {
       explanation = `Compiled APK ke andar sensitive secret (${finding.proof || 'DEX/resources.arsc'}) mila hai jise JADX-GUI ya apktool se seconds me extract kiya ja sakta hai.`;
     }

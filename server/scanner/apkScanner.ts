@@ -1,6 +1,7 @@
 import AdmZip from 'adm-zip';
 import crypto from 'crypto';
 import { analyzeDexBytecode, type DexBytecodeGraphSummary } from './dexAnalyzer.ts';
+import { scanNativeElfLibraries, extractPrintableAscii, type NativeElfSummary } from './elfScanner.ts';
 
 export interface ApkFinding {
   category: string;
@@ -59,6 +60,11 @@ export interface ApkScanResult {
     cleartextHttpUrls: string[];
   };
   dexBytecodeGraph?: DexBytecodeGraphSummary;
+  nativeElfSummary?: NativeElfSummary;
+  pinningStatus?: {
+    active: boolean;
+    signals: string[];
+  };
   telemetry: {
     totalFiles: number;
     totalDexBytes: number;
@@ -502,6 +508,26 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     });
   }
 
+  const playPolicyPermissions = permissions.filter((p: string) =>
+    p.endsWith('REQUEST_INSTALL_PACKAGES') ||
+    p.endsWith('MANAGE_EXTERNAL_STORAGE') ||
+    p.endsWith('QUERY_ALL_PACKAGES') ||
+    p.endsWith('READ_SMS') ||
+    p.endsWith('RECEIVE_SMS')
+  );
+  if (playPolicyPermissions.length > 0) {
+    const highRiskPlayPerm = playPolicyPermissions.some(p => !p.endsWith('QUERY_ALL_PACKAGES'));
+    findings.push({
+      category: 'Permissions & Privacy',
+      type: `Play Console Restricted Policy Permissions (${playPolicyPermissions.length})`,
+      severity: highRiskPlayPerm ? 'MEDIUM' : 'LOW',
+      proof: `Declared restricted permissions: ${playPolicyPermissions.map(p => p.split('.').pop()).join(', ')}`,
+      description: 'Google Play Console requires explicit policy justification (and often rejects apps) for REQUEST_INSTALL_PACKAGES, MANAGE_EXTERNAL_STORAGE, QUERY_ALL_PACKAGES, or SMS permissions.',
+      remediation: 'Remove unnecessary high-privilege permissions or replace QUERY_ALL_PACKAGES with targeted <queries> package declarations in AndroidManifest.xml.',
+      owaspRef: 'MASVS-PLATFORM-1'
+    });
+  }
+
   // ── AUDIT 6: Hardcoded Secrets, Deep Bytecode Audit, SDKs/Trackers & Endpoint Extraction ──
   const dexEntries = entries.filter(e => e.entryName.endsWith('.dex'));
   let totalDexBytes = 0;
@@ -639,22 +665,27 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     inspectTextChunk(dexText, dexEntry.entryName, false);
   }
 
-  // Also scan assets/ for leaked .env, config, or JS bundles
+  // Also scan assets/ for leaked .env, config, JS bundles, or React Native Hermes .bundle files
   const assetEntries = entries.filter(e => e.entryName.startsWith('assets/'));
   for (const aEntry of assetEntries) {
-    if (
+    const isJsOrConfig =
       aEntry.entryName.endsWith('.json') ||
       aEntry.entryName.endsWith('.js') ||
       aEntry.entryName.endsWith('.mjs') ||
       aEntry.entryName.endsWith('.html') ||
-      aEntry.entryName.includes('.env')
-    ) {
-      const aText = aEntry.getData().toString('latin1');
-      inspectTextChunk(aText, aEntry.entryName, true);
+      aEntry.entryName.includes('.env');
+    const isNativeBundle = aEntry.entryName.endsWith('.bundle');
+
+    if (isJsOrConfig || isNativeBundle) {
+      const aBuf = aEntry.getData();
+      const isHermesBytecode =
+        isNativeBundle && aBuf.length >= 4 && aBuf[0] === 0xc6 && aBuf[1] === 0x1f && aBuf[2] === 0xbc && aBuf[3] === 0x03;
+      const aText = isHermesBytecode ? extractPrintableAscii(aBuf, 8, 4 * 1024 * 1024) : aBuf.toString('latin1');
+      inspectTextChunk(aText, isHermesBytecode ? `${aEntry.entryName} (Hermes)` : aEntry.entryName, true);
 
       if (aEntry.entryName.endsWith('capacitor.config.json')) {
         try {
-          const capCfg = JSON.parse(aEntry.getData().toString('utf8'));
+          const capCfg = JSON.parse(aBuf.toString('utf8'));
           if (capCfg?.server?.cleartext === true) {
             webViewSignals.add('capacitor.config.json server.cleartext=true');
           }
@@ -670,6 +701,16 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
         } catch (e) {}
       }
     }
+  }
+
+  // ── AUDIT 6.5: Native ELF (.so) Hardening & Flutter/JNI String Inspection ──
+  const soEntries = entries.filter(e => e.entryName.startsWith('lib/') && e.entryName.endsWith('.so'));
+  const nativeElfAudit = scanNativeElfLibraries(soEntries);
+  for (const chunk of nativeElfAudit.extractedStringChunks) {
+    inspectTextChunk(chunk.text, chunk.sourceName, true);
+  }
+  for (const nf of nativeElfAudit.findings) {
+    findings.push(nf);
   }
 
   if (leakedSecrets.length > 0) {
@@ -871,11 +912,11 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   if (dexCfg.summary.taintPaths.length === 0 && dexEntries.length > 0) {
     findings.push({
       category: 'Deep Bytecode Taint Graph',
-      type: `Dalvik Control-Flow & Taint Audit Clean (${dexCfg.summary.methodsAnalyzed.toLocaleString()} Methods)`,
+      type: `Dalvik Control-Flow & Cross-Method Taint Clean (${dexCfg.summary.methodsAnalyzed.toLocaleString()} Methods)`,
       severity: 'PASS',
       owaspRef: 'MASVS-CODE-1',
-      proof: `Disassembled ${dexCfg.summary.totalClasses.toLocaleString()} DEX classes (${dexCfg.summary.appClasses.toLocaleString()} app/custom classes, ${dexCfg.summary.instructionsScanned.toLocaleString()} Dalvik opcodes) in ${dexCfg.summary.durationMs}ms with 0 unsanitized Source -> Sink taint flows.`,
-      description: 'Intraprocedural register taint tracing found zero unvalidated Intent/URI/Clipboard flows reaching WebView loadUrl, SQLite rawQuery, Runtime.exec, or Intent redirect sinks.',
+      proof: `Disassembled ${dexCfg.summary.totalClasses.toLocaleString()} DEX classes (${dexCfg.summary.appClasses.toLocaleString()} app/custom classes, ${dexCfg.summary.instructionsScanned.toLocaleString()} Dalvik opcodes) in ${dexCfg.summary.durationMs}ms with 0 intra- or cross-method Source -> Sink taint flows.`,
+      description: 'Intraprocedural and cross-method (multi-hop) register taint tracing found zero unvalidated Intent/URI/Clipboard flows reaching WebView loadUrl, SQLite rawQuery, Runtime.exec, or Intent redirect sinks.',
       remediation: 'Continue validating external Intent/URI extras and enforcing parameterized database queries.'
     });
   }
@@ -956,10 +997,12 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   }
   const baasUrls = Array.from(baasUrlSet).slice(0, 6);
 
-  // ── AUDIT 11: Network Security Config XML Audit (res/xml/*.xml) ──
+  // ── AUDIT 11: Network Security Config XML & SSL Certificate Pinning Audit ──
   const xmlResEntries = entries.filter(e => /^res\/xml\/.*\.xml$/i.test(e.entryName));
   let trustsUserCerts = false;
   let xmlCleartextPermitted = false;
+  const pinningSignalsAll: string[] = [...(dexCfg.summary.pinningSignals || [])];
+
   for (const xe of xmlResEntries) {
     const parsedXml = parseAxml(xe.getData());
     if (parsedXml.attributes.some(a => a.element === 'certificates' && a.name === 'src' && String(a.value) === 'user')) {
@@ -967,6 +1010,12 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     }
     if (parsedXml.attributes.some(a => (a.element === 'base-config' || a.element === 'domain-config') && a.name === 'cleartextTrafficPermitted' && a.value === true)) {
       xmlCleartextPermitted = true;
+    }
+    const hasXmlPin =
+      parsedXml.strings.includes('pin-set') ||
+      parsedXml.attributes.some(a => a.element === 'pin-set' || a.element === 'pin');
+    if (hasXmlPin) {
+      pinningSignalsAll.push(`${xe.entryName} (<pin-set>)`);
     }
   }
   if (trustsUserCerts) {
@@ -987,6 +1036,29 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
       proof: 'Found cleartextTrafficPermitted="true" in res/xml network configuration.',
       description: 'Allowing unencrypted HTTP in network_security_config bypasses Android 9+ HTTPS-by-default safeguards.',
       remediation: 'Set cleartextTrafficPermitted="false" in <base-config> inside res/xml/network_security_config.xml.'
+    });
+  }
+
+  const pinningActive = pinningSignalsAll.length > 0;
+  if (pinningActive) {
+    findings.push({
+      category: 'Network Security',
+      type: 'SSL / TLS Certificate Pinning Active',
+      severity: 'PASS',
+      proof: `Pinning enforced via: ${pinningSignalsAll.slice(0, 4).join(', ')}`,
+      description: 'Certificate pinning prevents attackers from intercepting HTTPS API traffic even if a rogue or compromised root CA certificate is installed on the device.',
+      remediation: 'Maintain backup SPKI SHA-256 pins with rotation expiration dates to avoid locking out users.',
+      owaspRef: 'MASVS-NETWORK-1'
+    });
+  } else {
+    findings.push({
+      category: 'Network Security',
+      type: 'No SSL / TLS Certificate Pinning Detected',
+      severity: 'LOW',
+      proof: 'No <pin-set> found in res/xml network_security_config and no OkHttp CertificatePinner / TrustKit calls detected in DEX.',
+      description: 'Without certificate pinning, rooted devices or proxy tools (Burp/mitmproxy) with a user-trusted CA can intercept API traffic if user-CA trust or device compromise occurs.',
+      remediation: 'Add <pin-set> inside res/xml/network_security_config.xml or configure OkHttp CertificatePinner for sensitive auth/payment API domains.',
+      owaspRef: 'MASVS-NETWORK-1'
     });
   }
 
@@ -1065,6 +1137,11 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
       cleartextHttpUrls: cleartextList.slice(0, 10)
     },
     dexBytecodeGraph: dexCfg.summary,
+    nativeElfSummary: nativeElfAudit.summary,
+    pinningStatus: {
+      active: pinningActive,
+      signals: pinningSignalsAll
+    },
     telemetry: {
       totalFiles: entries.length,
       totalDexBytes,

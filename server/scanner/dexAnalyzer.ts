@@ -5,6 +5,8 @@ export interface TaintFlowFinding {
   detail: string;
   severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
   owaspRef: string;
+  hopCount?: number;
+  callChain?: string[];
 }
 
 export interface DexBytecodeFinding {
@@ -30,6 +32,8 @@ export interface DexBytecodeGraphSummary {
   methodsAnalyzed: number;
   instructionsScanned: number;
   durationMs: number;
+  interproceduralPathsCount?: number;
+  pinningSignals?: string[];
   taintPaths: TaintFlowFinding[];
   callGraphHotspots: CallGraphHotspot[];
 }
@@ -41,9 +45,43 @@ export interface DexAnalysisOutput {
 
 interface RegisterState {
   taintSource: string | null;
+  paramOrigins: number[];
+  callOriginIdx: number | null;
   strConst: string | null;
   numConst: number | null;
   typeConst: string | null;
+}
+
+interface SinkHitTemplate {
+  sinkName: string;
+  findingType: string;
+  severity: 'CRITICAL' | 'HIGH';
+  owaspRef: string;
+  description: string;
+  remediation: string;
+}
+
+interface ArgTaintOrigin {
+  taintSource: string | null;
+  paramOrigins: number[];
+  callOriginIdx: number | null;
+}
+
+interface MethodCallRecord {
+  calleeKey: string;
+  calleeReadableSig: string;
+  argInfos: ArgTaintOrigin[];
+}
+
+interface MethodSummary {
+  key: string;
+  readableSig: string;
+  directParamSinks: Map<number, SinkHitTemplate[]>;
+  localCallSinks: Array<{ callOriginIdx: number; sink: SinkHitTemplate }>;
+  returnsTaintSource: string | null;
+  returnParamIndices: Set<number>;
+  returnCallOrigins: number[];
+  calls: MethodCallRecord[];
 }
 
 // Official Dalvik bytecode 16-bit code-unit widths indexed by low opcode byte (0x00..0xff)
@@ -133,6 +171,8 @@ class DexFileReader {
   private readonly stringIdsOff: number;
   private readonly typeIdsSize: number;
   private readonly typeIdsOff: number;
+  private readonly protoIdsSize: number;
+  private readonly protoIdsOff: number;
   private readonly methodIdsSize: number;
   private readonly methodIdsOff: number;
   readonly classDefsSize: number;
@@ -143,6 +183,8 @@ class DexFileReader {
     this.stringIdsOff = buf.readUInt32LE(0x3c);
     this.typeIdsSize = buf.readUInt32LE(0x40);
     this.typeIdsOff = buf.readUInt32LE(0x44);
+    this.protoIdsSize = buf.readUInt32LE(0x48);
+    this.protoIdsOff = buf.readUInt32LE(0x4c);
     this.methodIdsSize = buf.readUInt32LE(0x58);
     this.methodIdsOff = buf.readUInt32LE(0x5c);
     this.classDefsSize = buf.readUInt32LE(0x60);
@@ -170,17 +212,29 @@ class DexFileReader {
     return this.getString(this.buf.readUInt32LE(off));
   }
 
-  getMethodRef(methodIdx: number): { classDesc: string; name: string } {
+  getProtoShorty(protoIdx: number): string {
+    if (protoIdx < 0 || protoIdx >= this.protoIdsSize) return '';
+    const off = this.protoIdsOff + protoIdx * 12;
+    if (off + 12 > this.buf.length) return '';
+    return this.getString(this.buf.readUInt32LE(off));
+  }
+
+  getMethodRef(methodIdx: number): { classDesc: string; name: string; canonicalKey: string } {
     if (methodIdx < 0 || methodIdx >= this.methodIdsSize) {
-      return { classDesc: '', name: '' };
+      return { classDesc: '', name: '', canonicalKey: '' };
     }
     const off = this.methodIdsOff + methodIdx * 8;
-    if (off + 8 > this.buf.length) return { classDesc: '', name: '' };
+    if (off + 8 > this.buf.length) return { classDesc: '', name: '', canonicalKey: '' };
     const classIdx = this.buf.readUInt16LE(off);
+    const protoIdx = this.buf.readUInt16LE(off + 2);
     const nameIdx = this.buf.readUInt32LE(off + 4);
+    const classDesc = this.getTypeDescriptor(classIdx);
+    const name = this.getString(nameIdx);
+    const shorty = this.getProtoShorty(protoIdx);
     return {
-      classDesc: this.getTypeDescriptor(classIdx),
-      name: this.getString(nameIdx)
+      classDesc,
+      name,
+      canonicalKey: `${classDesc}->${name}:${shorty}`
     };
   }
 
@@ -242,9 +296,41 @@ function classifyCallCategory(classDesc: string, methodName: string): CallGraphH
   return null;
 }
 
+function mergeParamOrigins(a: number[], b: number[]): number[] {
+  if (a.length === 0) return b.slice(0, 4);
+  if (b.length === 0) return a.slice(0, 4);
+  const out = [...a];
+  for (const x of b) {
+    if (!out.includes(x) && out.length < 4) out.push(x);
+  }
+  return out;
+}
+
+function recordUnresolvedParamOrCallSink(
+  summary: MethodSummary,
+  candidateRegs: number[],
+  getReg: (r: number) => RegisterState,
+  sink: SinkHitTemplate
+) {
+  for (const regIdx of candidateRegs) {
+    const st = getReg(regIdx);
+    for (const pIdx of st.paramOrigins) {
+      const existing = summary.directParamSinks.get(pIdx) || [];
+      if (!existing.some(e => e.sinkName === sink.sinkName)) {
+        existing.push(sink);
+        summary.directParamSinks.set(pIdx, existing);
+      }
+    }
+    if (st.callOriginIdx !== null && summary.localCallSinks.length < 32) {
+      summary.localCallSinks.push({ callOriginIdx: st.callOriginIdx, sink });
+    }
+  }
+}
+
 /**
  * Inspects compiled Dalvik .dex buffers at binary class/method/opcode granularity
- * to build intraprocedural source-to-sink taint paths and verify crypto/SSL/WebView sinks.
+ * to build intraprocedural & cross-method source-to-sink taint paths, detect SSL pinning,
+ * and verify crypto/SSL/WebView sinks.
  */
 export function analyzeDexBytecode(
   dexFiles: Array<{ name: string; buffer: Buffer }>,
@@ -262,6 +348,8 @@ export function analyzeDexBytecode(
   const taintPaths: TaintFlowFinding[] = [];
   const hotspotMap = new Map<string, CallGraphHotspot>();
   const dedupFindingKeys = new Set<string>();
+  const methodSummaries = new Map<string, MethodSummary>();
+  const pinningSignals = new Set<string>();
 
   const addFinding = (f: DexBytecodeFinding) => {
     const key = `${f.type}::${f.proof.slice(0, 120)}`;
@@ -335,7 +423,7 @@ export function analyzeDexBytecode(
 
         for (let mIdx = 0; mIdx < count && cursor.pos < dex.buffer.length; mIdx++) {
           runningMethodIdx += readUleb128(dex.buffer, cursor);
-          readUleb128(dex.buffer, cursor); // access_flags
+          const accessFlags = readUleb128(dex.buffer, cursor);
           const codeOff = readUleb128(dex.buffer, cursor);
 
           if (codeOff === 0 || codeOff + 16 > dex.buffer.length) continue;
@@ -343,6 +431,12 @@ export function analyzeDexBytecode(
           const methodInfo = reader.getMethodRef(runningMethodIdx);
           const methodName = methodInfo.name || 'unknown';
           const fullMethodSig = `${readableClass}.${methodName}()`;
+          const canonicalMethodKey = methodInfo.canonicalKey || `${classDesc}->${methodName}:`;
+
+          const registersSize = dex.buffer.readUInt16LE(codeOff);
+          const insSize = dex.buffer.readUInt16LE(codeOff + 2);
+          const isStaticMethod = (accessFlags & 0x0008) !== 0;
+          const firstParamReg = Math.max(0, registersSize - insSize);
 
           const insnsSize = dex.buffer.readUInt32LE(codeOff + 12);
           const insnsStart = codeOff + 16;
@@ -350,18 +444,34 @@ export function analyzeDexBytecode(
 
           methodsAnalyzed++;
 
+          const methodSummary: MethodSummary = {
+            key: canonicalMethodKey,
+            readableSig: fullMethodSig,
+            directParamSinks: new Map(),
+            localCallSinks: [],
+            returnsTaintSource: null,
+            returnParamIndices: new Set(),
+            returnCallOrigins: [],
+            calls: []
+          };
+
           // TrustManager & HostnameVerifier bytecode-level inspection counters
           let hasThrow = false;
           let hasMeaningfulCall = false;
           let opcodeCount = 0;
           let returnedOneConstant = false;
 
-          // Intraprocedural register tracking
+          // Intraprocedural register tracking (seeded with incoming p0..pN parameter origins)
           const regs = new Map<number, RegisterState>();
           const getReg = (r: number): RegisterState => {
             let st = regs.get(r);
             if (!st) {
-              st = { taintSource: null, strConst: null, numConst: null, typeConst: null };
+              const pIdx = r - firstParamReg;
+              const paramOrigins =
+                r >= firstParamReg && r < registersSize && (isStaticMethod || pIdx > 0)
+                  ? [pIdx]
+                  : [];
+              st = { taintSource: null, paramOrigins, callOriginIdx: null, strConst: null, numConst: null, typeConst: null };
               regs.set(r, st);
             }
             return st;
@@ -410,14 +520,19 @@ export function analyzeDexBytecode(
             } else if (op === 0x0a || op === 0x0b || op === 0x0c) {
               // move-result / move-result-object
               const vAA = (word0 >> 8) & 0xff;
-              regs.set(vAA, lastInvokeResult ? { ...lastInvokeResult } : { taintSource: null, strConst: null, numConst: null, typeConst: null });
+              regs.set(
+                vAA,
+                lastInvokeResult
+                  ? { ...lastInvokeResult, paramOrigins: [...lastInvokeResult.paramOrigins] }
+                  : { taintSource: null, paramOrigins: [], callOriginIdx: null, strConst: null, numConst: null, typeConst: null }
+              );
               lastInvokeResult = null;
             } else if (op === 0x12) {
               // const/4 vA, #+B
               const vA = (word0 >> 8) & 0x0f;
               let rawNibble = (word0 >> 12) & 0x0f;
               if (rawNibble >= 8) rawNibble -= 16;
-              regs.set(vA, { taintSource: null, strConst: null, numConst: rawNibble, typeConst: null });
+              regs.set(vA, { taintSource: null, paramOrigins: [], callOriginIdx: null, strConst: null, numConst: rawNibble, typeConst: null });
               lastInvokeResult = null;
             } else if ((op === 0x13 || op === 0x14) && width >= 2) {
               // const/16 or const
@@ -425,7 +540,7 @@ export function analyzeDexBytecode(
               const numVal = op === 0x13
                 ? dex.buffer.readInt16LE(insnsStart + (pc + 1) * 2)
                 : dex.buffer.readInt32LE(insnsStart + (pc + 1) * 2);
-              regs.set(vAA, { taintSource: null, strConst: null, numConst: numVal, typeConst: null });
+              regs.set(vAA, { taintSource: null, paramOrigins: [], callOriginIdx: null, strConst: null, numConst: numVal, typeConst: null });
               lastInvokeResult = null;
             } else if ((op === 0x1a || op === 0x1b) && width >= 2) {
               // const-string / const-string/jumbo
@@ -434,21 +549,31 @@ export function analyzeDexBytecode(
                 ? dex.buffer.readUInt16LE(insnsStart + (pc + 1) * 2)
                 : dex.buffer.readUInt32LE(insnsStart + (pc + 1) * 2);
               const sVal = reader.getString(strIdx);
-              regs.set(vAA, { taintSource: null, strConst: sVal, numConst: null, typeConst: 'Ljava/lang/String;' });
+              regs.set(vAA, { taintSource: null, paramOrigins: [], callOriginIdx: null, strConst: sVal, numConst: null, typeConst: 'Ljava/lang/String;' });
               lastInvokeResult = null;
             } else if (op === 0x22 && width >= 2) {
               // new-instance vAA, type@BBBB
               const vAA = (word0 >> 8) & 0xff;
               const typeIdx = dex.buffer.readUInt16LE(insnsStart + (pc + 1) * 2);
-              regs.set(vAA, { taintSource: null, strConst: null, numConst: null, typeConst: reader.getTypeDescriptor(typeIdx) });
+              regs.set(vAA, { taintSource: null, paramOrigins: [], callOriginIdx: null, strConst: null, numConst: null, typeConst: reader.getTypeDescriptor(typeIdx) });
               lastInvokeResult = null;
             } else if (op === 0x27) {
               hasThrow = true;
               lastInvokeResult = null;
-            } else if ((op === 0x0f || op === 0x10 || op === 0x11) && opcodeCount <= 4) {
-              // Check simple return vAA where vAA == 1
+            } else if (op === 0x0f || op === 0x10 || op === 0x11) {
+              // return / return-wide / return-object
               const vAA = (word0 >> 8) & 0xff;
-              if (getReg(vAA).numConst === 1) returnedOneConstant = true;
+              const retState = getReg(vAA);
+              if (opcodeCount <= 4 && retState.numConst === 1) returnedOneConstant = true;
+              if (retState.taintSource && !methodSummary.returnsTaintSource) {
+                methodSummary.returnsTaintSource = retState.taintSource;
+              }
+              for (const pIdx of retState.paramOrigins) {
+                methodSummary.returnParamIndices.add(pIdx);
+              }
+              if (retState.callOriginIdx !== null && methodSummary.returnCallOrigins.length < 16) {
+                methodSummary.returnCallOrigins.push(retState.callOriginIdx);
+              }
               lastInvokeResult = null;
             } else if ((op >= 0x6e && op <= 0x72) || (op >= 0x74 && op <= 0x78)) {
               // invoke-* (35c or 3rc)
@@ -476,6 +601,17 @@ export function analyzeDexBytecode(
               const calleeClass = callee.classDesc;
               const calleeName = callee.name;
 
+              if (
+                calleeClass === 'Lokhttp3/CertificatePinner;' ||
+                calleeClass === 'Lokhttp3/CertificatePinner$Builder;' ||
+                calleeClass === 'Lcom/datatheorem/android/trustkit/TrustKit;' ||
+                calleeName === 'setCertificatePinner'
+              ) {
+                if (pinningSignals.size < 8) {
+                  pinningSignals.add(`${formatReadableClass(calleeClass)}.${calleeName}()`);
+                }
+              }
+
               const callCat = classifyCallCategory(calleeClass, calleeName);
               if (callCat) {
                 addHotspot({
@@ -485,8 +621,8 @@ export function analyzeDexBytecode(
                 });
               }
 
-              // Track taint propagation & result origin cleanly
-              let nextResult: RegisterState = { taintSource: null, strConst: null, numConst: null, typeConst: null };
+              // Track taint propagation & result origin cleanly (local sources + paramOrigins + interprocedural call return)
+              const nextResult: RegisterState = { taintSource: null, paramOrigins: [], callOriginIdx: null, strConst: null, numConst: null, typeConst: null };
               const sourceLabel = classifyTaintSource(calleeClass, calleeName);
               if (sourceLabel) {
                 nextResult.taintSource = sourceLabel;
@@ -502,25 +638,60 @@ export function analyzeDexBytecode(
                   baseState.taintSource = propagated;
                   nextResult.taintSource = propagated;
                 }
+                const mergedParams = mergeParamOrigins(baseState.paramOrigins, appendState.paramOrigins);
+                baseState.paramOrigins = mergedParams;
+                nextResult.paramOrigins = [...mergedParams];
+                if (appendState.callOriginIdx !== null) {
+                  baseState.callOriginIdx = appendState.callOriginIdx;
+                  nextResult.callOriginIdx = appendState.callOriginIdx;
+                } else if (baseState.callOriginIdx !== null) {
+                  nextResult.callOriginIdx = baseState.callOriginIdx;
+                }
               } else if (
                 (calleeClass === 'Ljava/lang/StringBuilder;' || calleeClass === 'Ljava/lang/StringBuffer;') &&
                 calleeName === 'toString' &&
                 argRegs.length >= 1
               ) {
-                nextResult.taintSource = getReg(argRegs[0]).taintSource;
+                const baseState = getReg(argRegs[0]);
+                nextResult.taintSource = baseState.taintSource;
+                nextResult.paramOrigins = [...baseState.paramOrigins];
+                nextResult.callOriginIdx = baseState.callOriginIdx;
               } else if (
                 (calleeClass === 'Landroid/net/Uri;' && calleeName === 'parse' && argRegs.length >= 1) ||
                 (calleeClass === 'Ljava/lang/String;' && (calleeName === 'format' || calleeName === 'valueOf' || calleeName === 'concat' || calleeName === 'trim'))
               ) {
-                const taintedArg = argRegs.find(r => getReg(r).taintSource);
-                if (taintedArg !== undefined) {
-                  nextResult.taintSource = getReg(taintedArg).taintSource;
+                for (const r of argRegs) {
+                  const st = getReg(r);
+                  if (st.taintSource && !nextResult.taintSource) nextResult.taintSource = st.taintSource;
+                  if (st.paramOrigins.length > 0) nextResult.paramOrigins = mergeParamOrigins(nextResult.paramOrigins, st.paramOrigins);
+                  if (st.callOriginIdx !== null && nextResult.callOriginIdx === null) nextResult.callOriginIdx = st.callOriginIdx;
                 }
               } else if (calleeClass === 'Ljava/lang/String;' && calleeName === 'getBytes' && argRegs.length >= 1) {
                 const strOrigin = getReg(argRegs[0]).strConst;
                 if (strOrigin && strOrigin.length >= 4) {
                   nextResult.strConst = strOrigin;
                 }
+              } else if (
+                calleeClass &&
+                !isNoiseFrameworkClass(calleeClass, appPkgPrefix) &&
+                callee.canonicalKey !== canonicalMethodKey &&
+                methodSummary.calls.length < 40
+              ) {
+                const argInfos: ArgTaintOrigin[] = argRegs.map(r => {
+                  const st = getReg(r);
+                  return {
+                    taintSource: st.taintSource,
+                    paramOrigins: [...st.paramOrigins],
+                    callOriginIdx: st.callOriginIdx
+                  };
+                });
+                const callIdx = methodSummary.calls.length;
+                methodSummary.calls.push({
+                  calleeKey: callee.canonicalKey,
+                  calleeReadableSig: `${formatReadableClass(calleeClass)}.${calleeName}()`,
+                  argInfos
+                });
+                nextResult.callOriginIdx = callIdx;
               }
 
               lastInvokeResult = nextResult;
@@ -531,77 +702,112 @@ export function analyzeDexBytecode(
                 calleeClass === 'Landroid/webkit/WebView;' &&
                 (calleeName === 'loadUrl' || calleeName === 'loadData' || calleeName === 'loadDataWithBaseURL' || calleeName === 'evaluateJavascript')
               ) {
+                const webViewSink: SinkHitTemplate = {
+                  sinkName: `WebView.${calleeName}()`,
+                  findingType: `Tainted WebView Load / JS Injection (${calleeName})`,
+                  severity: 'HIGH',
+                  owaspRef: 'MASVS-PLATFORM-1',
+                  description: 'External Intent, deep-link URI, or clipboard data flows into a WebView without host/scheme sanitization, enabling phishing or JavaScript bridge abuse.',
+                  remediation: 'Validate URL host against a strict HTTPS allowlist (e.g., uri.getHost().equals("yourdomain.com")) before calling loadUrl/evaluateJavascript.'
+                };
                 const taintedReg = argRegs.slice(1).find(r => getReg(r).taintSource);
                 if (taintedReg !== undefined) {
                   const src = getReg(taintedReg).taintSource!;
-                  const flow: TaintFlowFinding = {
+                  taintPaths.push({
                     source: src,
-                    sink: `WebView.${calleeName}()`,
+                    sink: webViewSink.sinkName,
                     methodSignature: fullMethodSig,
-                    detail: `Untrusted input from ${src} flows directly into WebView.${calleeName}() without domain allowlist validation inside ${fullMethodSig}.`,
+                    detail: `Untrusted input from ${src} flows directly into ${webViewSink.sinkName} without domain allowlist validation inside ${fullMethodSig}.`,
                     severity: 'HIGH',
-                    owaspRef: 'MASVS-PLATFORM-1'
-                  };
-                  taintPaths.push(flow);
+                    owaspRef: webViewSink.owaspRef,
+                    hopCount: 1,
+                    callChain: [fullMethodSig, webViewSink.sinkName]
+                  });
                   addFinding({
                     category: 'Deep Bytecode Taint Graph',
-                    type: `Tainted WebView Load / JS Injection (${calleeName})`,
+                    type: webViewSink.findingType,
                     severity: 'HIGH',
-                    proof: `Bytecode flow in ${fullMethodSig}: ${src} -> WebView.${calleeName}()`,
-                    description: 'External Intent, deep-link URI, or clipboard data flows into a WebView without host/scheme sanitization, enabling phishing or JavaScript bridge abuse.',
-                    remediation: 'Validate URL host against a strict HTTPS allowlist (e.g., uri.getHost().equals("yourdomain.com")) before calling loadUrl/evaluateJavascript.',
-                    owaspRef: 'MASVS-PLATFORM-1'
+                    proof: `Bytecode flow in ${fullMethodSig}: ${src} -> ${webViewSink.sinkName}`,
+                    description: webViewSink.description,
+                    remediation: webViewSink.remediation,
+                    owaspRef: webViewSink.owaspRef
                   });
+                } else {
+                  recordUnresolvedParamOrCallSink(methodSummary, argRegs.slice(1), getReg, webViewSink);
                 }
               }
 
               // 2. Tainted SQLite rawQuery / execSQL
               if (calleeClass === 'Landroid/database/sqlite/SQLiteDatabase;' && (calleeName === 'rawQuery' || calleeName === 'execSQL')) {
+                const sqlSink: SinkHitTemplate = {
+                  sinkName: `SQLiteDatabase.${calleeName}()`,
+                  findingType: `Local SQLite Injection Sink (${calleeName})`,
+                  severity: 'HIGH',
+                  owaspRef: 'MASVS-STORAGE-1',
+                  description: 'Untrusted Intent/URI data reaches a raw SQLite query or execSQL sink via string concatenation rather than bound parameters.',
+                  remediation: 'Use parameterized queries with "?" selectionArgs or Room @Query bindings instead of dynamic SQL concatenation.'
+                };
                 const taintedReg = argRegs.slice(1).find(r => getReg(r).taintSource);
                 if (taintedReg !== undefined) {
                   const src = getReg(taintedReg).taintSource!;
                   taintPaths.push({
                     source: src,
-                    sink: `SQLiteDatabase.${calleeName}()`,
+                    sink: sqlSink.sinkName,
                     methodSignature: fullMethodSig,
-                    detail: `Tainted ${src} flows into SQLiteDatabase.${calleeName}() in ${fullMethodSig}.`,
+                    detail: `Tainted ${src} flows into ${sqlSink.sinkName} in ${fullMethodSig}.`,
                     severity: 'HIGH',
-                    owaspRef: 'MASVS-STORAGE-1'
+                    owaspRef: sqlSink.owaspRef,
+                    hopCount: 1,
+                    callChain: [fullMethodSig, sqlSink.sinkName]
                   });
                   addFinding({
                     category: 'Deep Bytecode Taint Graph',
-                    type: `Local SQLite Injection Sink (${calleeName})`,
+                    type: sqlSink.findingType,
                     severity: 'HIGH',
-                    proof: `Bytecode flow in ${fullMethodSig}: ${src} -> SQLiteDatabase.${calleeName}()`,
-                    description: 'Untrusted Intent/URI data reaches a raw SQLite query or execSQL sink via string concatenation rather than bound parameters.',
-                    remediation: 'Use parameterized queries with "?" selectionArgs or Room @Query bindings instead of dynamic SQL concatenation.',
-                    owaspRef: 'MASVS-STORAGE-1'
+                    proof: `Bytecode flow in ${fullMethodSig}: ${src} -> ${sqlSink.sinkName}`,
+                    description: sqlSink.description,
+                    remediation: sqlSink.remediation,
+                    owaspRef: sqlSink.owaspRef
                   });
+                } else {
+                  recordUnresolvedParamOrCallSink(methodSummary, argRegs.slice(1), getReg, sqlSink);
                 }
               }
 
               // 3. Tainted Runtime.exec / Command Injection
               if (calleeClass === 'Ljava/lang/Runtime;' && calleeName === 'exec') {
+                const execSink: SinkHitTemplate = {
+                  sinkName: 'Runtime.exec()',
+                  findingType: 'Tainted OS Command Execution (Runtime.exec)',
+                  severity: 'CRITICAL',
+                  owaspRef: 'MASVS-CODE-1',
+                  description: 'External data enters Runtime.exec(), allowing malicious callers or deep links to execute arbitrary shell commands.',
+                  remediation: 'Eliminate shell invocation or restrict arguments strictly via an explicit allowlist.'
+                };
                 const taintedReg = argRegs.slice(1).find(r => getReg(r).taintSource);
                 if (taintedReg !== undefined) {
                   const src = getReg(taintedReg).taintSource!;
                   taintPaths.push({
                     source: src,
-                    sink: 'Runtime.exec()',
+                    sink: execSink.sinkName,
                     methodSignature: fullMethodSig,
                     detail: `Tainted ${src} flows into Runtime.exec() in ${fullMethodSig}.`,
                     severity: 'CRITICAL',
-                    owaspRef: 'MASVS-CODE-1'
+                    owaspRef: execSink.owaspRef,
+                    hopCount: 1,
+                    callChain: [fullMethodSig, execSink.sinkName]
                   });
                   addFinding({
                     category: 'Deep Bytecode Taint Graph',
-                    type: 'Tainted OS Command Execution (Runtime.exec)',
+                    type: execSink.findingType,
                     severity: 'CRITICAL',
                     proof: `Bytecode flow in ${fullMethodSig}: ${src} -> Runtime.exec()`,
-                    description: 'External data enters Runtime.exec(), allowing malicious callers or deep links to execute arbitrary shell commands.',
-                    remediation: 'Eliminate shell invocation or restrict arguments strictly via an explicit allowlist.',
-                    owaspRef: 'MASVS-CODE-1'
+                    description: execSink.description,
+                    remediation: execSink.remediation,
+                    owaspRef: execSink.owaspRef
                   });
+                } else {
+                  recordUnresolvedParamOrCallSink(methodSummary, argRegs.slice(1), getReg, execSink);
                 }
               }
 
@@ -610,26 +816,38 @@ export function analyzeDexBytecode(
                 (calleeName === 'startActivity' || calleeName === 'startActivityForResult' || calleeName === 'sendBroadcast' || calleeName === 'startService') &&
                 argRegs.length >= 2
               ) {
+                const intentSink: SinkHitTemplate = {
+                  sinkName: `${calleeName}(Intent)`,
+                  findingType: `Intent Redirection Vulnerability (${calleeName})`,
+                  severity: 'HIGH',
+                  owaspRef: 'MASVS-PLATFORM-1',
+                  description: 'Forwarding an attacker-supplied nested Intent without validating its ComponentName allows external apps to launch private internal Activities or access protected ContentProviders.',
+                  remediation: 'Verify intent.getComponent()?.getPackageName() === getPackageName() and sanitize flags (remove FLAG_GRANT_READ_URI_PERMISSION) before forwarding.'
+                };
                 const intentArgReg = argRegs[1];
                 const intentSrc = getReg(intentArgReg).taintSource;
                 if (intentSrc && (intentSrc.includes('getParcelableExtra') || intentSrc.includes('getIntent'))) {
                   taintPaths.push({
                     source: intentSrc,
-                    sink: `${calleeName}(Intent)`,
+                    sink: intentSink.sinkName,
                     methodSignature: fullMethodSig,
                     detail: `External ${intentSrc} forwarded directly into ${calleeName}() inside ${fullMethodSig}.`,
                     severity: 'HIGH',
-                    owaspRef: 'MASVS-PLATFORM-1'
+                    owaspRef: intentSink.owaspRef,
+                    hopCount: 1,
+                    callChain: [fullMethodSig, intentSink.sinkName]
                   });
                   addFinding({
                     category: 'Deep Bytecode Taint Graph',
-                    type: `Intent Redirection Vulnerability (${calleeName})`,
+                    type: intentSink.findingType,
                     severity: 'HIGH',
                     proof: `Bytecode flow in ${fullMethodSig}: ${intentSrc} -> ${calleeName}()`,
-                    description: 'Forwarding an attacker-supplied nested Intent without validating its ComponentName allows external apps to launch private internal Activities or access protected ContentProviders.',
-                    remediation: 'Verify intent.getComponent()?.getPackageName() === getPackageName() and sanitize flags (remove FLAG_GRANT_READ_URI_PERMISSION) before forwarding.',
-                    owaspRef: 'MASVS-PLATFORM-1'
+                    description: intentSink.description,
+                    remediation: intentSink.remediation,
+                    owaspRef: intentSink.owaspRef
                   });
+                } else {
+                  recordUnresolvedParamOrCallSink(methodSummary, [intentArgReg], getReg, intentSink);
                 }
               }
 
@@ -791,6 +1009,16 @@ export function analyzeDexBytecode(
               owaspRef: 'MASVS-NETWORK-1'
             });
           }
+          if (
+            methodSummary.directParamSinks.size > 0 ||
+            methodSummary.localCallSinks.length > 0 ||
+            methodSummary.returnsTaintSource !== null ||
+            methodSummary.returnParamIndices.size > 0 ||
+            methodSummary.returnCallOrigins.length > 0 ||
+            methodSummary.calls.length > 0
+          ) {
+            methodSummaries.set(methodSummary.key, methodSummary);
+          }
         }
 
         if (mSection === 0 && totalClassMethods > 400) break;
@@ -817,6 +1045,9 @@ export function analyzeDexBytecode(
     }
   }
 
+  // ── Phase 2 & 3: Cross-Method Global Taint Propagation (2-4 Hop Call Chains) ──
+  const interproceduralPathsCount = resolveInterproceduralTaint(methodSummaries, taintPaths, addFinding);
+
   return {
     summary: {
       dexCount: dexFiles.length,
@@ -825,9 +1056,199 @@ export function analyzeDexBytecode(
       methodsAnalyzed,
       instructionsScanned,
       durationMs: Date.now() - startTime,
-      taintPaths: taintPaths.slice(0, 15),
+      interproceduralPathsCount,
+      pinningSignals: Array.from(pinningSignals),
+      taintPaths: taintPaths.slice(0, 20),
       callGraphHotspots: Array.from(hotspotMap.values()).slice(0, 15)
     },
     findings
   };
+}
+
+function resolveInterproceduralTaint(
+  methodSummaries: Map<string, MethodSummary>,
+  taintPaths: TaintFlowFinding[],
+  addFinding: (f: DexBytecodeFinding) => void
+): number {
+  const MAX_HOPS = 4;
+  const effectiveReturnSource = new Map<string, { source: string; chain: string[] }>();
+  for (const [k, m] of methodSummaries.entries()) {
+    if (m.returnsTaintSource) {
+      effectiveReturnSource.set(k, { source: m.returnsTaintSource, chain: [m.readableSig] });
+    }
+  }
+
+  const effectiveParamSinks = new Map<string, Map<number, Array<{ sink: SinkHitTemplate; chain: string[] }>>>();
+  for (const [k, m] of methodSummaries.entries()) {
+    if (m.directParamSinks.size > 0) {
+      const pMap = new Map<number, Array<{ sink: SinkHitTemplate; chain: string[] }>>();
+      for (const [pIdx, sinks] of m.directParamSinks.entries()) {
+        pMap.set(pIdx, sinks.map(sink => ({ sink, chain: [m.readableSig] })));
+      }
+      effectiveParamSinks.set(k, pMap);
+    }
+  }
+
+  const resolveCallResultTaint = (
+    m: MethodSummary,
+    callIdx: number
+  ): { source: string; chain: string[] } | null => {
+    const call = m.calls[callIdx];
+    if (!call) return null;
+    const directRet = effectiveReturnSource.get(call.calleeKey);
+    if (directRet) return directRet;
+
+    // Also propagate pass-through helpers (e.g., sanitizeWrapper(taintedInput))
+    const calleeSum = methodSummaries.get(call.calleeKey);
+    if (!calleeSum || calleeSum.returnParamIndices.size === 0) return null;
+    for (const pIdx of calleeSum.returnParamIndices) {
+      const arg = call.argInfos[pIdx];
+      if (!arg) continue;
+      if (arg.taintSource) {
+        return { source: arg.taintSource, chain: [calleeSum.readableSig] };
+      }
+      if (arg.callOriginIdx !== null) {
+        const inner = m.calls[arg.callOriginIdx];
+        const innerRet = inner ? effectiveReturnSource.get(inner.calleeKey) : undefined;
+        if (innerRet && innerRet.chain.length < MAX_HOPS && !innerRet.chain.includes(calleeSum.readableSig)) {
+          return { source: innerRet.source, chain: [...innerRet.chain, calleeSum.readableSig] };
+        }
+      }
+    }
+    return null;
+  };
+
+  // Fixed-point propagation across up to 4 hops
+  for (let pass = 0; pass < MAX_HOPS; pass++) {
+    let changed = false;
+
+    for (const [k, m] of methodSummaries.entries()) {
+      if (!effectiveReturnSource.has(k)) {
+        for (const callIdx of m.returnCallOrigins) {
+          const ret = resolveCallResultTaint(m, callIdx);
+          if (ret && ret.chain.length < MAX_HOPS && !ret.chain.includes(m.readableSig)) {
+            effectiveReturnSource.set(k, {
+              source: ret.source,
+              chain: [...ret.chain, m.readableSig]
+            });
+            changed = true;
+            break;
+          }
+        }
+      }
+
+      for (const call of m.calls) {
+        const calleeSinks = effectiveParamSinks.get(call.calleeKey);
+        if (!calleeSinks) continue;
+
+        for (let argIdx = 0; argIdx < call.argInfos.length; argIdx++) {
+          const arg = call.argInfos[argIdx];
+          if (arg.paramOrigins.length === 0) continue;
+          const targetEntries = calleeSinks.get(argIdx);
+          if (!targetEntries) continue;
+
+          for (const entry of targetEntries) {
+            if (entry.chain.length >= MAX_HOPS || entry.chain.includes(m.readableSig)) continue;
+            let callerMap = effectiveParamSinks.get(k);
+            if (!callerMap) {
+              callerMap = new Map();
+              effectiveParamSinks.set(k, callerMap);
+            }
+            for (const callerParamIdx of arg.paramOrigins) {
+              const list = callerMap.get(callerParamIdx) || [];
+              if (!list.some(item => item.sink.sinkName === entry.sink.sinkName)) {
+                list.push({ sink: entry.sink, chain: [m.readableSig, ...entry.chain] });
+                callerMap.set(callerParamIdx, list);
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (!changed) break;
+  }
+
+  let interproceduralCount = 0;
+  const dedupChains = new Set<string>();
+
+  const emitCrossMethodFlow = (
+    resolvedSource: string,
+    callChain: string[],
+    sink: SinkHitTemplate,
+    entryMethod: string
+  ) => {
+    if (sink.sinkName.endsWith('(Intent)') && !resolvedSource.includes('getParcelableExtra') && !resolvedSource.includes('getIntent')) {
+      return;
+    }
+    const hops = Math.max(2, callChain.length - 1);
+    const dedupKey = `${sink.sinkName}::${callChain.join('->')}`;
+    if (dedupChains.has(dedupKey) || taintPaths.length >= 20) return;
+    dedupChains.add(dedupKey);
+    interproceduralCount++;
+
+    const flowText = callChain.join(' -> ');
+    taintPaths.push({
+      source: resolvedSource,
+      sink: sink.sinkName,
+      methodSignature: entryMethod,
+      detail: `Cross-method ${hops}-hop flow (${resolvedSource}): ${flowText}`,
+      severity: sink.severity,
+      owaspRef: sink.owaspRef,
+      hopCount: hops,
+      callChain
+    });
+    addFinding({
+      category: 'Deep Bytecode Taint Graph',
+      type: `Cross-Method Global Taint Flow: ${sink.findingType}`,
+      severity: sink.severity,
+      proof: `Multi-hop flow (${hops} hops, Source: ${resolvedSource}): ${flowText}`,
+      description: `Untrusted input travels across multiple classes/methods (${hops} call hops) before reaching ${sink.sinkName} without host or parameter sanitization.`,
+      remediation: sink.remediation,
+      owaspRef: sink.owaspRef
+    });
+  };
+
+  for (const m of methodSummaries.values()) {
+    // Pattern A: Helper method returned untrusted taint into a direct sink inside caller m
+    for (const localSink of m.localCallSinks) {
+      const ret = resolveCallResultTaint(m, localSink.callOriginIdx);
+      if (ret) {
+        emitCrossMethodFlow(ret.source, [...ret.chain, m.readableSig, localSink.sink.sinkName], localSink.sink, m.readableSig);
+      }
+    }
+
+    // Pattern B: Caller m obtains untrusted taint (directly or via helper return) and passes it down a 2-4 hop param-to-sink chain
+    for (const call of m.calls) {
+      const calleeSinks = effectiveParamSinks.get(call.calleeKey);
+      if (!calleeSinks) continue;
+
+      for (let argIdx = 0; argIdx < call.argInfos.length; argIdx++) {
+        const targetEntries = calleeSinks.get(argIdx);
+        if (!targetEntries) continue;
+
+        const arg = call.argInfos[argIdx];
+        let srcLabel: string | null = arg.taintSource;
+        let prefixChain: string[] = [m.readableSig];
+
+        if (!srcLabel && arg.callOriginIdx !== null) {
+          const ret = resolveCallResultTaint(m, arg.callOriginIdx);
+          if (ret) {
+            srcLabel = ret.source;
+            prefixChain = [...ret.chain, m.readableSig];
+          }
+        }
+        if (!srcLabel) continue;
+
+        for (const entry of targetEntries) {
+          if (entry.chain.includes(m.readableSig)) continue;
+          const fullChain = [...prefixChain, ...entry.chain, entry.sink.sinkName];
+          emitCrossMethodFlow(srcLabel, fullChain, entry.sink, m.readableSig);
+        }
+      }
+    }
+  }
+
+  return interproceduralCount;
 }

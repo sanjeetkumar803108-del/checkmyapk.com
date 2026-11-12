@@ -313,9 +313,17 @@ async function runApkAuditPipeline(
 
   if (apkScanResult.dexBytecodeGraph) {
     const cfg = apkScanResult.dexBytecodeGraph;
+    const crossHops = cfg.interproceduralPathsCount || 0;
     log(
-      `Stage 2.5 Bytecode CFG: Disassembled ${cfg.methodsAnalyzed.toLocaleString()} methods (${cfg.instructionsScanned.toLocaleString()} Dalvik opcodes) in ${cfg.durationMs}ms — ${cfg.taintPaths.length} taint flow(s)`,
+      `Stage 2.5 Bytecode CFG: Disassembled ${cfg.methodsAnalyzed.toLocaleString()} methods (${cfg.instructionsScanned.toLocaleString()} Dalvik opcodes) in ${cfg.durationMs}ms — ${cfg.taintPaths.length} taint flow(s) (${crossHops} cross-method)`,
       68
+    );
+  }
+  if (apkScanResult.nativeElfSummary && apkScanResult.nativeElfSummary.uniqueLibrariesCount > 0) {
+    const elf = apkScanResult.nativeElfSummary;
+    log(
+      `Native ELF (.so) Audit: Checked ${elf.uniqueLibrariesCount} binaries (${elf.appLibrariesCount} app libs, ${elf.nativeStringsScannedKb} KB native strings; pinning=${apkScanResult.pinningStatus?.active ? 'ACTIVE' : 'NONE'})`,
+      73
     );
   }
 
@@ -465,7 +473,9 @@ async function runApkAuditPipeline(
       baasUrls: apkScanResult.baasUrls || [],
       probedApis,
       dexDeepAudit: apkScanResult.dexDeepAudit,
-      dexBytecodeGraph: apkScanResult.dexBytecodeGraph
+      dexBytecodeGraph: apkScanResult.dexBytecodeGraph,
+      nativeElfSummary: apkScanResult.nativeElfSummary,
+      pinningStatus: apkScanResult.pinningStatus
     },
     telemetry: {
       totalLinesInspected: apkScanResult.telemetry.totalFiles,

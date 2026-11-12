@@ -34,3 +34,4 @@ npm start
 ```
 
 > **Hosting Note:** Because APK uploads accept up to `100 MB` (`multer.memoryStorage()`) and deep scans use an asynchronous in-memory job queue (`GET /api/jobs/:jobId`), deploy the full-stack server on a persistent Node.js host such as **Railway**, **Render**, **Fly.io**, or a Linux VPS rather than pure Vercel Serverless Functions (which enforce a `4.5 MB` payload limit and ephemeral execution).
+
