@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #04060c;
+    color: #f1f5f9;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+/* ── Glassmorphism & Surface Effects ── */
+.glass-panel {
+  background: rgba(11, 16, 29, 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 60px -15px rgba(0, 0, 0, 0.7), inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+.glass-card {
+  background: rgba(13, 18, 32, 0.65);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* ── Cyber Neon Glows ── */
+.cyber-glow-cyan {
+  box-shadow: 0 0 30px -5px rgba(6, 182, 212, 0.35), 0 0 12px -2px rgba(6, 182, 212, 0.2);
+}
+
+.cyber-glow-purple {
+  box-shadow: 0 0 30px -5px rgba(168, 85, 247, 0.38), 0 0 12px -2px rgba(168, 85, 247, 0.22);
+}
+
+.cyber-glow-emerald {
+  box-shadow: 0 0 30px -5px rgba(16, 185, 129, 0.32);
+}
+
+.cyber-glow-rose {
+  box-shadow: 0 0 30px -5px rgba(244, 63, 94, 0.32);
+}
+
+/* ── Laser Scanner Sweep Animation ── */
+@keyframes scanBeam {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.7;
+  }
+  80% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: translateY(350%);
+    opacity: 0;
+  }
+}
+
+.animate-scan-beam {
+  animation: scanBeam 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes gradientFlow {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.animate-gradient-text {
+  background-size: 200% auto;
+  animation: gradientFlow 5s ease infinite;
+}
+
+/* ── Custom Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #04060c;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Print optimization for Audit PDF Export */
+@media print {
+  canvas, .no-print {
+    display: none !important;
+  }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+}
