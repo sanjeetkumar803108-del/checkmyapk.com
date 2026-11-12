@@ -10,6 +10,7 @@ import { scanSecurityHeaders } from './server/scanner/headerScanner.ts';
 import { probeDatabaseSecurity } from './server/scanner/dbProbe.ts';
 import { probeRateLimiting } from './server/scanner/rateLimitProbe.ts';
 import { computeSecurityScore } from './server/scanner/scoreCalculator.ts';
+import { runWebDeepAudit } from './server/scanner/webDeepScanner.ts';
 import { 
   generateAiSecuritySummary, 
   generateVulnerabilityDeepFix, 
@@ -99,7 +100,7 @@ app.post('/api/scan', async (req, res) => {
     console.log(`[SecureAppAI +${elapsed}s] ${msg}`);
   };
 
-  let { targetUrl } = req.body;
+  let { targetUrl, authHeader, authCookie } = req.body;
 
   if (!targetUrl || typeof targetUrl !== 'string') {
     return res.status(400).json({ error: 'Please provide a valid target URL.' });
@@ -175,11 +176,33 @@ app.post('/api/scan', async (req, res) => {
       probeRateLimiting(targetUrl)
     ]);
 
-    // Step 3b: Now feed extracted JS bundle text + HTML into DB probe & tech fingerprint!
+    // Step 3b: Feed extracted JS bundles + HTML into DB probe, DOM XSS / OpenAPI / GraphQL / JWT deep inspection!
     log(`Probing extracted client scripts for Firebase/Supabase DB rules & Auth tokens...`);
-    const dbFindings = await probeDatabaseSecurity(html, keyResult.collectedScriptContent);
+    if (authHeader || authCookie) {
+      log(`Optional target-origin auth context attached (redacted from logs, same-origin only)...`);
+    }
+    log(`Scanning JS bundles for DOM XSS sinks, OpenAPI/Swagger, GraphQL introspection & JWT weaknesses...`);
+
+    const [dbFindings, webDeepResult] = await Promise.all([
+      probeDatabaseSecurity(html, keyResult.collectedScriptContent),
+      runWebDeepAudit({
+        targetUrl,
+        html,
+        initialStatus: initialRes.status,
+        collectedScripts: keyResult.collectedScripts,
+        authHeader: typeof authHeader === 'string' ? authHeader : undefined,
+        authCookie: typeof authCookie === 'string' ? authCookie : undefined
+      })
+    ]);
+
     const detectedTech = detectTechnologies(`${html}\n${keyResult.collectedScriptContent.slice(0, 120000)}`, headers);
     log(`Fingerprinted technologies: ${detectedTech.join(', ') || 'Standard Web Stack'}`);
+    log(
+      `Deep Web Surface: ${webDeepResult.surface.discoveredRoutes.length} routes, ` +
+        `${webDeepResult.surface.apiEndpoints.length} API paths, ` +
+        `${webDeepResult.surface.domSinks.length} DOM sinks, ` +
+        `${webDeepResult.surface.jwtAudits.length} JWT(s) audited`
+    );
 
     const transportFindings: any[] = [];
     if (parsedUrl.protocol === 'http:' && !isPrivateIp) {
@@ -204,6 +227,7 @@ app.post('/api/scan', async (req, res) => {
       ...artifactFindings.map(f => ({ ...f, category: 'Exposed Source Maps & Configs', owaspRef: f.owaspRef || 'OWASP-A05' })),
       ...headerFindings.map(f => ({ ...f, category: 'Security Headers & CORS', owaspRef: f.owaspRef || 'OWASP-A05' })),
       ...dbFindings.map(f => ({ ...f, category: 'Database & Cloud Rules', owaspRef: f.owaspRef || 'OWASP-A01' })),
+      ...webDeepResult.findings.map(f => ({ ...f, owaspRef: f.owaspRef || 'OWASP-A05' })),
       { ...rateLimitFinding, category: 'Rate Limiting & Cost Protection', owaspRef: rateLimitFinding.owaspRef || 'OWASP-API04' }
     ];
 
@@ -230,6 +254,7 @@ app.post('/api/scan', async (req, res) => {
     // Attach deep telemetry
     const enrichedResponse = {
       ...finalReport,
+      webDeepSurface: webDeepResult.surface,
       telemetry: {
         latencyMs,
         totalBytesScanned: keyResult.totalBytesScanned,

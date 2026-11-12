@@ -10,12 +10,12 @@ const WEB_LOG_MESSAGES = [
   'Initializing CheckMyAPK automated penetration suite...',
   'Resolving target DNS and verifying SSL/TLS certificate chain...',
   'Extracting HTML DOM tree and discovering JavaScript bundles...',
-  'Running deep Regex Secret Hunter (OpenAI, Gemini, Stripe, AWS)...',
-  'Probing Content-Security-Policy, HSTS & CORS security headers...',
-  'Testing Firebase / Supabase unauthenticated database rules...',
+  'Mapping robots.txt, sitemap.xml, OpenAPI specs & GraphQL schemas...',
+  'Running deep Regex Secret Hunter & Static DOM XSS Sink Analysis...',
+  'Auditing JWT claims, Content-Security-Policy, HSTS & CORS headers...',
+  'Testing Firebase / Supabase rules & passive API route error leaks...',
   'Firing 15-request burst to test Denial-of-Wallet rate limits...',
-  'Synthesizing architectural risk assessment & computing score...',
-  'Finalizing Executive Security Audit Report...'
+  'Synthesizing architectural risk assessment & computing score...'
 ];
 
 const APK_LOG_MESSAGES = [

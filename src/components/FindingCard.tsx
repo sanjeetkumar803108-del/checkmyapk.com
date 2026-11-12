@@ -274,6 +274,60 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
     };
   }
 
+  if (type.includes('DOM XSS') || type.includes('Unsafe Dynamic Code Execution')) {
+    return {
+      react: {
+        filename: 'SafeHtmlRenderer.tsx (DOMPurify + Safe React)',
+        code: `import DOMPurify from 'dompurify';\n\n// Replace innerHTML / eval() / raw __html with sanitized JSX rendering:\nconst cleanHtml = DOMPurify.sanitize(userContent);\nreturn <div dangerouslySetInnerHTML={{ __html: cleanHtml }} />;`
+      }
+    };
+  }
+
+  if (type.includes('postMessage')) {
+    return {
+      bridge: {
+        filename: 'windowMessageHandler.ts (Strict Origin Guard)',
+        code: `window.addEventListener('message', (event) => {\n  if (event.origin !== 'https://app.yourdomain.com') return;\n  processVerifiedMessage(event.data);\n});\n\n// Specify exact origin instead of '*':\npopupWindow.postMessage(payload, 'https://app.yourdomain.com');`
+      }
+    };
+  }
+
+  if (type.includes('GraphQL')) {
+    return {
+      apollo: {
+        filename: 'graphqlServer.ts (Disable Prod Introspection)',
+        code: `const server = new ApolloServer({\n  typeDefs,\n  resolvers,\n  introspection: process.env.NODE_ENV !== 'production'\n});`
+      }
+    };
+  }
+
+  if (type.includes('OpenAPI') || type.includes('Swagger')) {
+    return {
+      express: {
+        filename: 'server.ts (Restrict Swagger / OpenAPI JSON)',
+        code: `// Disable or require admin authentication before serving /openapi.json or /swagger.json:\nif (process.env.NODE_ENV !== 'production') {\n  app.get('/openapi.json', (_req, res) => res.json(openApiSpec));\n}`
+      }
+    };
+  }
+
+  if (type.includes('Verbose Server Stack Trace') || type.includes('Unauthenticated API Endpoint')) {
+    return {
+      express: {
+        filename: 'server/middleware/errorAndAuth.ts',
+        code: `// 1. Protect API routes & whitelist safe DTO fields:\napp.get('/api/users', requireAuth, (req, res) => {\n  res.json(users.map(({ id, displayName }) => ({ id, displayName })));\n});\n\n// 2. Mask stack traces in production:\napp.use((err, _req, res, _next) => {\n  console.error(err);\n  res.status(500).json({ error: 'Internal server error' });\n});`
+      }
+    };
+  }
+
+  if (type.includes('JWT') && !type.includes('LocalStorage')) {
+    return {
+      jwt: {
+        filename: 'auth/jwtVerify.ts (Strict Alg Pinning & Short Exp)',
+        code: `import jwt from 'jsonwebtoken';\n\n// 1. Always enforce short expiry and zero PII in claims:\nconst token = jwt.sign({ sub: user.id, role: user.role }, process.env.JWT_SECRET!, {\n  algorithm: 'HS256',\n  expiresIn: '15m'\n});\n\n// 2. Never accept alg: "none" — explicitly pin algorithms:\nconst payload = jwt.verify(token, process.env.JWT_SECRET!, { algorithms: ['HS256'] });`
+      }
+    };
+  }
+
   if (type.includes('LocalStorage') || type.includes('JWT')) {
     return {
       cookie: {

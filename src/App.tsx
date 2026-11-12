@@ -149,6 +149,39 @@ interface SecurityReport {
       signals: string[];
     };
   };
+  webDeepSurface?: {
+    discoveredRoutes: string[];
+    apiEndpoints: string[];
+    openApiSpecs: Array<{ url: string; title?: string; pathsCount: number }>;
+    graphqlEndpoints: Array<{ url: string; introspectionEnabled: boolean; typesCount?: number }>;
+    domSinks: Array<{
+      type: string;
+      severity: 'HIGH' | 'MEDIUM';
+      fileUrl: string;
+      snippet: string;
+      taintedByInput: boolean;
+    }>;
+    jwtAudits: Array<{
+      source: string;
+      alg: string;
+      hasExp: boolean;
+      expired: boolean;
+      claims: string[];
+      issues: string[];
+    }>;
+    robotsDisallowed: string[];
+    sitemapCount: number;
+    authAudit?: {
+      enabled: boolean;
+      authKind: string;
+      targetStatus: number;
+      protectedApiChecks: Array<{
+        url: string;
+        authStatus: number | string;
+        unauthStatus: number | string;
+      }>;
+    };
+  };
   telemetry?: {
     latencyMs?: number;
     totalBytesScanned: number;
@@ -163,6 +196,9 @@ interface SecurityReport {
 export default function App() {
   const [scanMode, setScanMode] = useState<'web' | 'apk'>('apk');
   const [url, setUrl] = useState('');
+  const [showWebAuthOptions, setShowWebAuthOptions] = useState(false);
+  const [webAuthHeader, setWebAuthHeader] = useState('');
+  const [webAuthCookie, setWebAuthCookie] = useState('');
   const [apkFile, setApkFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -366,9 +402,10 @@ export default function App() {
     const steps = [
       'Resolving target DNS & establishing secure TLS socket...',
       'Crawling HTML document tree and extracting script bundles...',
-      'Deep regex pattern matching for leaked OpenAI, Gemini, AWS, Stripe secrets...',
-      'Probing HTTP response security headers & CORS origin policies...',
-      'Testing Firebase Firestore / Supabase unauthenticated access rules...',
+      'Mapping robots.txt, sitemap.xml, OpenAPI specs & GraphQL endpoints...',
+      'Scanning JS bundles for leaked secrets & Static DOM XSS sinks...',
+      'Auditing JWT claims, HTTP Security Headers & CORS origin policies...',
+      'Testing Firebase / Supabase rules & passive API route error leaks...',
       'Sending 15-request burst to test Denial-of-Wallet rate limits...',
       'Invoking Gemini Neural Engine for custom architectural threat synthesis...'
     ];
@@ -382,10 +419,14 @@ export default function App() {
     }, 800);
 
     try {
+      const payload: Record<string, string> = { targetUrl: finalUrl };
+      if (webAuthHeader.trim()) payload.authHeader = webAuthHeader.trim();
+      if (webAuthCookie.trim()) payload.authCookie = webAuthCookie.trim();
+
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetUrl: finalUrl })
+        body: JSON.stringify(payload)
       });
 
       clearInterval(stepInterval);
@@ -752,6 +793,48 @@ export default function App() {
                     </button>
                   </form>
 
+                  {/* Optional Authenticated API & JWT Audit */}
+                  <div className="text-left">
+                    <button
+                      type="button"
+                      onClick={() => setShowWebAuthOptions(!showWebAuthOptions)}
+                      className="text-[11px] font-bold text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>
+                        {showWebAuthOptions
+                          ? 'Hide Authenticated API & JWT Audit Inputs'
+                          : '+ Optional: Audit With Bearer JWT or Session Cookie (Same-Origin Only)'}
+                      </span>
+                    </button>
+
+                    {showWebAuthOptions && (
+                      <div className="mt-2.5 p-3.5 rounded-2xl bg-[#050811]/90 border border-cyan-500/25 space-y-2.5">
+                        <div className="text-[10px] text-slate-400">
+                          Credentials are forwarded strictly to the target&apos;s own origin for safe read-only checks (JWT decode + auth control verification) and are never logged or stored.
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            placeholder="Bearer <JWT_TOKEN> (optional)"
+                            value={webAuthHeader}
+                            onChange={(e) => setWebAuthHeader(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400/50 font-mono"
+                          />
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            placeholder="Cookie: session=... (optional)"
+                            value={webAuthCookie}
+                            onChange={(e) => setWebAuthCookie(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400/50 font-mono"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Quick Test Targets */}
                   <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap justify-center pt-1">
                     <span className="font-bold text-slate-500">Quick Targets:</span>
@@ -1060,6 +1143,155 @@ export default function App() {
                     </>
                   )}
                 </div>
+
+                {/* Web Deep Surface: Multi-Route, OpenAPI, GraphQL, DOM XSS Sinks & JWT */}
+                {!report.isApkAudit && report.webDeepSurface && (
+                  <div className="glass-card p-5 rounded-2xl border border-cyan-500/25 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Globe className="w-4 h-4 text-cyan-400" />
+                        <h3 className="text-xs font-black uppercase tracking-wider text-white">
+                          Stage 2.5: Web Attack Surface, DOM XSS Sinks &amp; API/JWT Audit
+                        </h3>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono">
+                        <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 font-bold">
+                          {report.webDeepSurface.discoveredRoutes.length} Routes • {report.webDeepSurface.apiEndpoints.length} APIs
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full font-black border ${
+                            report.webDeepSurface.domSinks.length > 0
+                              ? 'bg-rose-500/15 text-rose-300 border-rose-400/30'
+                              : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+                          }`}
+                        >
+                          {report.webDeepSurface.domSinks.length} DOM Sink(s)
+                        </span>
+                        {report.webDeepSurface.graphqlEndpoints.length > 0 && (
+                          <span
+                            className={`px-2 py-0.5 rounded-full font-bold border ${
+                              report.webDeepSurface.graphqlEndpoints.some((g) => g.introspectionEnabled)
+                                ? 'bg-amber-500/15 text-amber-300 border-amber-400/30'
+                                : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+                            }`}
+                          >
+                            GraphQL:{' '}
+                            {report.webDeepSurface.graphqlEndpoints.some((g) => g.introspectionEnabled)
+                              ? 'Introspection Open'
+                              : 'Protected'}
+                          </span>
+                        )}
+                        {report.webDeepSurface.jwtAudits.length > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-400/30 font-bold">
+                            JWT Audited: {report.webDeepSurface.jwtAudits.length}
+                          </span>
+                        )}
+                        {report.webDeepSurface.authAudit?.enabled && (
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/30 font-bold">
+                            Auth: {report.webDeepSurface.authAudit.authKind} (HTTP {report.webDeepSurface.authAudit.targetStatus})
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-[11px] font-mono">
+                      {/* Routes & OpenAPI */}
+                      <div className="p-3 rounded-xl bg-[#050811]/80 border border-white/5 space-y-1.5">
+                        <div className="text-[10px] font-black uppercase text-cyan-300">
+                          Routes, Sitemap &amp; OpenAPI ({report.webDeepSurface.openApiSpecs.length} Spec)
+                        </div>
+                        <div className="max-h-28 overflow-y-auto space-y-1 pr-1 text-slate-300">
+                          {report.webDeepSurface.openApiSpecs.map((sp, i) => (
+                            <div key={i} className="text-amber-300 truncate" title={sp.url}>
+                              OpenAPI: {sp.url.replace(/^https?:\/\/[^/]+/, '')} ({sp.pathsCount} paths)
+                            </div>
+                          ))}
+                          {report.webDeepSurface.apiEndpoints.slice(0, 6).map((ep, i) => (
+                            <div key={`ep-${i}`} className="text-emerald-300 truncate" title={ep}>
+                              API: {ep}
+                            </div>
+                          ))}
+                          {report.webDeepSurface.discoveredRoutes.slice(0, 5).map((rt, i) => (
+                            <div key={`rt-${i}`} className="text-slate-400 truncate" title={rt}>
+                              Route: {rt}
+                            </div>
+                          ))}
+                          {report.webDeepSurface.apiEndpoints.length === 0 &&
+                            report.webDeepSurface.discoveredRoutes.length === 0 &&
+                            report.webDeepSurface.openApiSpecs.length === 0 && (
+                              <div className="text-slate-500">No extra routes or OpenAPI docs exposed.</div>
+                            )}
+                        </div>
+                      </div>
+
+                      {/* Static DOM XSS Sinks */}
+                      <div className="p-3 rounded-xl bg-[#050811]/80 border border-white/5 space-y-1.5">
+                        <div className="text-[10px] font-black uppercase text-rose-300">
+                          Static DOM XSS Sinks ({report.webDeepSurface.domSinks.length})
+                        </div>
+                        <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1">
+                          {report.webDeepSurface.domSinks.length > 0 ? (
+                            report.webDeepSurface.domSinks.slice(0, 6).map((sink, i) => (
+                              <div key={i} className="p-1.5 rounded bg-rose-500/10 border border-rose-500/20">
+                                <div className="flex items-center justify-between gap-1 text-[10px]">
+                                  <span className="font-bold text-rose-300">{sink.type}</span>
+                                  {sink.taintedByInput && (
+                                    <span className="px-1 rounded bg-rose-500/30 text-white text-[9px]">INPUT TAINT</span>
+                                  )}
+                                </div>
+                                <div className="text-slate-300 text-[10px] truncate" title={sink.snippet}>
+                                  {sink.snippet}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="text-emerald-300">0 unsafe eval / innerHTML / postMessage sinks matched.</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* JWT & Auth Control Checks */}
+                      <div className="p-3 rounded-xl bg-[#050811]/80 border border-white/5 space-y-1.5">
+                        <div className="text-[10px] font-black uppercase text-purple-300">
+                          JWT &amp; Auth Session Audit ({report.webDeepSurface.jwtAudits.length})
+                        </div>
+                        <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1">
+                          {report.webDeepSurface.jwtAudits.map((jt, i) => (
+                            <div key={i} className="p-1.5 rounded bg-purple-500/10 border border-purple-500/20 space-y-0.5">
+                              <div className="flex items-center justify-between text-[10px]">
+                                <span className="text-purple-200 font-bold">alg: {jt.alg}</span>
+                                <span className={jt.hasExp ? 'text-emerald-300' : 'text-amber-300'}>
+                                  {jt.hasExp ? (jt.expired ? 'Expired exp' : 'Valid exp') : 'No exp'}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-slate-400 truncate">
+                                Claims: {jt.claims.join(', ')}
+                              </div>
+                              {jt.issues.length > 0 && (
+                                <div className="text-[10px] text-rose-300 truncate">{jt.issues.join(' • ')}</div>
+                              )}
+                            </div>
+                          ))}
+                          {report.webDeepSurface.authAudit?.protectedApiChecks.slice(0, 4).map((chk, i) => (
+                            <div key={`chk-${i}`} className="text-[10px] text-slate-300 flex justify-between gap-2">
+                              <span className="truncate">{chk.url}</span>
+                              <span className="shrink-0 text-cyan-300">
+                                {chk.authStatus} vs {chk.unauthStatus}
+                              </span>
+                            </div>
+                          ))}
+                          {report.webDeepSurface.jwtAudits.length === 0 &&
+                            (!report.webDeepSurface.authAudit ||
+                              report.webDeepSurface.authAudit.protectedApiChecks.length === 0) && (
+                              <div className="text-slate-500">
+                                No client JWTs found. Attach an optional Bearer JWT above to audit session claims &amp; protected routes.
+                              </div>
+                            )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Ostorlab-Level APK Intelligence Bento Modules */}
                 {report.isApkAudit && report.apkMeta && (

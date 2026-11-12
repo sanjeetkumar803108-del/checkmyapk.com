@@ -248,7 +248,31 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
   let webCode = `{\n  "headers": [\n    {\n      "source": "/(.*)",\n      "headers": [\n        { "key": "X-Content-Type-Options", "value": "nosniff" },\n        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },\n        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains; preload" },\n        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }\n      ]\n    }\n  ]\n}`;
   let verifyCmd = `curl -I ${targetUrl}`;
 
-  if (t.includes('.env') || t.includes('.git')) {
+  if (t.includes('DOM XSS') || t.includes('Unsafe Dynamic Code Execution')) {
+    webFilename = 'src/components/SafeRender.tsx (DOMPurify + No eval)';
+    webLang = 'typescript';
+    webCode = `import DOMPurify from 'dompurify';\n\n// Never pass raw strings into innerHTML, eval(), or unguarded dangerouslySetInnerHTML:\nconst cleanHtml = DOMPurify.sanitize(untrustedHtml);\nreturn <div dangerouslySetInnerHTML={{ __html: cleanHtml }} />;`;
+  } else if (t.includes('postMessage')) {
+    webFilename = 'src/utils/postMessageBridge.ts';
+    webLang = 'typescript';
+    webCode = `// 1. Validate exact origin on message listeners:\nwindow.addEventListener('message', (event) => {\n  if (event.origin !== 'https://app.yourdomain.com') return;\n  handleSafePayload(event.data);\n});\n\n// 2. Specify exact targetOrigin instead of wildcard '*':\ntargetWindow.postMessage(payload, 'https://app.yourdomain.com');`;
+  } else if (t.includes('GraphQL')) {
+    webFilename = 'server/graphql.ts (Disable Production Introspection)';
+    webLang = 'typescript';
+    webCode = `const server = new ApolloServer({\n  typeDefs,\n  resolvers,\n  introspection: process.env.NODE_ENV !== 'production'\n});`;
+  } else if (t.includes('OpenAPI') || t.includes('Swagger')) {
+    webFilename = 'server.ts (Gate Swagger UI / OpenAPI JSON)';
+    webLang = 'typescript';
+    webCode = `if (process.env.NODE_ENV !== 'production') {\n  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));\n}\n// Or protect /openapi.json behind admin auth middleware!`;
+  } else if (t.includes('JWT') && !t.includes('LocalStorage')) {
+    webFilename = 'server/auth/jwtVerifier.ts';
+    webLang = 'typescript';
+    webCode = `import jwt from 'jsonwebtoken';\n\n// 1. Sign with short TTL & zero PII:\nconst token = jwt.sign({ sub: user.id, role: user.role }, process.env.JWT_SECRET!, {\n  algorithm: 'HS256',\n  expiresIn: '15m'\n});\n\n// 2. Reject "alg: none" strictly by pinning algorithms:\nconst decoded = jwt.verify(token, process.env.JWT_SECRET!, { algorithms: ['HS256'] });`;
+  } else if (t.includes('Stack Trace') || t.includes('Unauthenticated API Endpoint')) {
+    webFilename = 'server/middleware/apiSecurity.ts';
+    webLang = 'typescript';
+    webCode = `// Require auth middleware on user/admin routes and sanitize error output:\napp.get('/api/users', requireAuth, async (req, res) => {\n  res.json({ users: safePublicDtos }); // Never expose passwordHash/secrets\n});\n\napp.use((err, req, res, next) => {\n  console.error(err);\n  res.status(500).json({ error: 'Internal server error' });\n});`;
+  } else if (t.includes('.env') || t.includes('.git')) {
     webFilename = 'nginx.conf / hosting dashboard';
     webLang = 'bash';
     webCode = `# Block dotfiles (.env, .git) on Nginx/Apache and rotate all leaked credentials immediately!\nlocation ~ /\\. {\n  deny all;\n  return 404;\n}`;

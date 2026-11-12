@@ -16,6 +16,7 @@ export interface KeyScanResult {
   totalLinesInspected: number;
   scannedScripts: string[];
   collectedScriptContent: string;
+  collectedScripts: Array<{ url: string; content: string }>;
 }
 
 const SECRET_PATTERNS = [
@@ -84,6 +85,7 @@ export async function scanForLeakedKeys(scriptUrls: string[]): Promise<KeyScanRe
   let totalBytesScanned = 0;
   let totalLinesInspected = 0;
   const scriptChunks: string[] = [];
+  const collectedScripts: Array<{ url: string; content: string }> = [];
   let collectedBytes = 0;
   const MAX_COLLECTED_BYTES = 2 * 1024 * 1024;
 
@@ -104,6 +106,7 @@ export async function scanForLeakedKeys(scriptUrls: string[]): Promise<KeyScanRe
         if (collectedBytes < MAX_COLLECTED_BYTES) {
           const slice = content.slice(0, MAX_COLLECTED_BYTES - collectedBytes);
           scriptChunks.push(slice);
+          collectedScripts.push({ url, content: slice });
           collectedBytes += slice.length;
         }
 
@@ -159,7 +162,8 @@ export async function scanForLeakedKeys(scriptUrls: string[]): Promise<KeyScanRe
     totalBytesScanned,
     totalLinesInspected,
     scannedScripts,
-    collectedScriptContent: scriptChunks.join('\n')
+    collectedScriptContent: scriptChunks.join('\n'),
+    collectedScripts
   };
 }
 
