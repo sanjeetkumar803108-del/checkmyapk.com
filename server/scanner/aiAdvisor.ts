@@ -121,6 +121,7 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
   simpleExplanation: string;
   dangerScenario: string;
   steps: string[];
+  beforeCode?: string;
   codeBlock: { filename: string; language: string; code: string };
   verifyCommand: string;
   source: 'gemini' | 'deterministic';
@@ -176,6 +177,7 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
   if (isAndroid) {
     let filename = 'android/app/build.gradle / AndroidManifest.xml';
     let language = 'xml';
+    let beforeCode = `<application\n    android:debuggable="true"\n    android:allowBackup="true"\n    android:usesCleartextTraffic="true" />`;
     let code = `<!-- Update AndroidManifest.xml / build.gradle -->\n<application\n    android:debuggable="false"\n    android:allowBackup="false"\n    android:usesCleartextTraffic="false" />`;
     let explanation = `Yeh mobile vulnerability "${t}" aapke Android APK configuration ya compiled bytecode me kamzori dikhati hai (${finding.proof || 'Manifest/DEX check'}).`;
     let danger = finding.description || 'Malicious apps ya attackers device ya network par is weakness ka galat fayda utha sakte hain.';
@@ -188,6 +190,7 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
     if (t.includes('WebView') || t.includes('capacitor')) {
       filename = 'capacitor.config.ts (or capacitor.config.json)';
       language = 'json';
+      beforeCode = `{\n  "server": { "cleartext": true },\n  "android": { "allowMixedContent": true, "webContentsDebuggingEnabled": true }\n}`;
       explanation = `Aapke Capacitor/Hybrid APK config me "${t}" detect hua hai (${finding.proof || 'cleartext=true'}). Jab server.cleartext true hota hai toh Capacitor CLI sync ke waqt plugins manifest me android:usesCleartextTraffic="true" inject karta hai aur unencrypted HTTP traffic allow ho sakta hai.`;
       danger = 'Public Wi-Fi, hotspot, ya compromised router par baitha attacker Man-in-the-Middle (MitM) attack karke plain HTTP network traffic sniff kar sakta hai ya WebView me malicious JavaScript inject kar sakta hai.';
       steps = [
@@ -236,6 +239,7 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
       simpleExplanation: explanation,
       dangerScenario: danger,
       steps,
+      beforeCode,
       codeBlock: { filename, language, code },
       verifyCommand: 'npx cap sync android && ./gradlew assembleRelease',
       source: 'deterministic'
@@ -245,28 +249,34 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
   // Finding-aware Web fallbacks
   let webFilename = techStack.toLowerCase().includes('next') ? 'next.config.js' : 'vercel.json';
   let webLang = techStack.toLowerCase().includes('next') ? 'javascript' : 'json';
+  let webBefore = `// Missing X-Content-Type-Options, X-Frame-Options, HSTS headers in HTTP response`;
   let webCode = `{\n  "headers": [\n    {\n      "source": "/(.*)",\n      "headers": [\n        { "key": "X-Content-Type-Options", "value": "nosniff" },\n        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },\n        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains; preload" },\n        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }\n      ]\n    }\n  ]\n}`;
   let verifyCmd = `curl -I ${targetUrl}`;
 
   if (t.includes('DOM XSS') || t.includes('Unsafe Dynamic Code Execution')) {
     webFilename = 'src/components/SafeRender.tsx (DOMPurify + No eval)';
     webLang = 'typescript';
+    webBefore = `<div dangerouslySetInnerHTML={{ __html: untrustedHtml }} /> // or element.innerHTML = untrustedHtml;`;
     webCode = `import DOMPurify from 'dompurify';\n\n// Never pass raw strings into innerHTML, eval(), or unguarded dangerouslySetInnerHTML:\nconst cleanHtml = DOMPurify.sanitize(untrustedHtml);\nreturn <div dangerouslySetInnerHTML={{ __html: cleanHtml }} />;`;
   } else if (t.includes('postMessage')) {
     webFilename = 'src/utils/postMessageBridge.ts';
     webLang = 'typescript';
+    webBefore = `window.addEventListener('message', (event) => handleSafePayload(event.data));\ntargetWindow.postMessage(payload, '*');`;
     webCode = `// 1. Validate exact origin on message listeners:\nwindow.addEventListener('message', (event) => {\n  if (event.origin !== 'https://app.yourdomain.com') return;\n  handleSafePayload(event.data);\n});\n\n// 2. Specify exact targetOrigin instead of wildcard '*':\ntargetWindow.postMessage(payload, 'https://app.yourdomain.com');`;
   } else if (t.includes('GraphQL')) {
     webFilename = 'server/graphql.ts (Disable Production Introspection)';
     webLang = 'typescript';
+    webBefore = `const server = new ApolloServer({ typeDefs, resolvers, introspection: true });`;
     webCode = `const server = new ApolloServer({\n  typeDefs,\n  resolvers,\n  introspection: process.env.NODE_ENV !== 'production'\n});`;
   } else if (t.includes('OpenAPI') || t.includes('Swagger')) {
     webFilename = 'server.ts (Gate Swagger UI / OpenAPI JSON)';
     webLang = 'typescript';
+    webBefore = `app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));`;
     webCode = `if (process.env.NODE_ENV !== 'production') {\n  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));\n}\n// Or protect /openapi.json behind admin auth middleware!`;
   } else if (t.includes('JWT') && !t.includes('LocalStorage')) {
     webFilename = 'server/auth/jwtVerifier.ts';
     webLang = 'typescript';
+    webBefore = `const token = jwt.sign({ id: user.id, password: user.password }, SECRET);\nconst decoded = jwt.decode(token); // trusts alg: "none"`;
     webCode = `import jwt from 'jsonwebtoken';\n\n// 1. Sign with short TTL & zero PII:\nconst token = jwt.sign({ sub: user.id, role: user.role }, process.env.JWT_SECRET!, {\n  algorithm: 'HS256',\n  expiresIn: '15m'\n});\n\n// 2. Reject "alg: none" strictly by pinning algorithms:\nconst decoded = jwt.verify(token, process.env.JWT_SECRET!, { algorithms: ['HS256'] });`;
   } else if (t.includes('Stack Trace') || t.includes('Unauthenticated API Endpoint')) {
     webFilename = 'server/middleware/apiSecurity.ts';
@@ -313,6 +323,7 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
       'Step 2: Neeche diya hardened snippet apply karein (aur agar koi key/file leak hui hai toh secret rotate karein).',
       'Step 3: Production deploy karein aur CheckMyAPK.com ya verify command se re-test karein.'
     ],
+    beforeCode: webBefore,
     codeBlock: { filename: webFilename, language: webLang, code: webCode },
     verifyCommand: verifyCmd,
     source: 'deterministic'
@@ -389,6 +400,7 @@ export async function generateVulnerabilityDeepFix(
   simpleExplanation: string;
   dangerScenario: string;
   steps: string[];
+  beforeCode?: string;
   codeBlock: { filename: string; language: string; code: string };
   verifyCommand: string;
   source: 'gemini' | 'deterministic';
@@ -421,6 +433,7 @@ Your response MUST be strict valid JSON matching this schema:
     "Step 2: Add or replace the code shown below",
     "Step 3: Deploy/build the updated app and verify"
   ],
+  "beforeCode": "Short 1-4 line example of the insecure/vulnerable pattern before the fix.",
   "codeBlock": {
     "filename": "Exact file name (e.g. vercel.json, AndroidManifest.xml, capacitor.config.json, server.js)",
     "language": "json | javascript | typescript | xml | kotlin | groovy | bash",
@@ -441,6 +454,7 @@ Do NOT wrap with markdown quotes other than standard JSON.`;
       simpleExplanation: parsed.simpleExplanation || fallback.simpleExplanation,
       dangerScenario: parsed.dangerScenario || fallback.dangerScenario,
       steps: parsed.steps || fallback.steps,
+      beforeCode: parsed.beforeCode || fallback.beforeCode,
       codeBlock: parsed.codeBlock || fallback.codeBlock,
       verifyCommand: parsed.verifyCommand || fallback.verifyCommand,
       source: 'gemini'

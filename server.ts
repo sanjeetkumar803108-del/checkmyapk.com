@@ -22,8 +22,17 @@ import {
   getScanJob,
   pushScanJobProgress,
   completeScanJob,
-  failScanJob
+  failScanJob,
+  enqueueJobTask,
+  getQueueCapacity,
+  subscribeScanJob
 } from './server/scanner/jobQueue.ts';
+import {
+  validateTargetSafety,
+  checkClientRateLimit,
+  getDomainVerificationChallenge,
+  verifyDomainOwnership
+} from './server/scanner/securityGuard.ts';
 
 dotenv.config();
 
@@ -32,17 +41,27 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.disable('x-powered-by');
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const IS_PROD = process.env.NODE_ENV === 'production' || process.argv.includes('--prod');
+const MAX_APK_SIZE_MB = Number(process.env.MAX_APK_UPLOAD_MB || 75);
 
 app.use(cors());
 app.use(express.json());
 
-// Configure Multer for in-memory APK uploads up to 100MB
-const upload = multer({ 
+// Configure Multer for in-memory APK uploads up to MAX_APK_SIZE_MB (default 75MB)
+const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 }
+  limits: { fileSize: MAX_APK_SIZE_MB * 1024 * 1024 }
 });
+
+function getClientIp(req: express.Request): string {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim();
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
 
 // Helper to extract script URLs from HTML
 function extractScriptUrls(html: string, baseUrl: string): string[] {
@@ -89,8 +108,28 @@ function detectTechnologies(html: string, headers: Record<string, any>): string[
   return Array.from(new Set(tech));
 }
 
+// 🔐 Domain Ownership Challenge Generator (DNS TXT / HTML Meta / .well-known)
+app.get('/api/domain-verify/challenge', (req, res) => {
+  const raw = typeof req.query.targetUrl === 'string' ? req.query.targetUrl.trim() : '';
+  if (!raw) return res.status(400).json({ error: 'targetUrl query parameter is required.' });
+  const normalized = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `https://${raw}`;
+  try {
+    return res.json(getDomainVerificationChallenge(normalized));
+  } catch {
+    return res.status(400).json({ error: 'Invalid targetUrl format.' });
+  }
+});
+
 // 🛡️ MAIN SCANNER API ENDPOINT
 app.post('/api/scan', async (req, res) => {
+  const rateCheck = checkClientRateLimit(getClientIp(req), 'web');
+  if (!rateCheck.allowed) {
+    res.setHeader('Retry-After', String(rateCheck.retryAfterSec));
+    return res.status(429).json({
+      error: `Too many scan requests from this IP. Please retry in ${rateCheck.retryAfterSec}s.`
+    });
+  }
+
   const startTime = Date.now();
   const realTimeLogs: Array<{ time: string; msg: string }> = [];
 
@@ -115,24 +154,14 @@ app.post('/api/scan', async (req, res) => {
 
   try {
     const parsedUrl = new URL(targetUrl);
-    const hostLower = parsedUrl.hostname.toLowerCase();
 
-    // Production SSRF Protection Guard
-    const isMetadataHost = hostLower === '169.254.169.254' || hostLower === 'metadata.google.internal' || hostLower.endsWith('.internal');
-    const isPrivateIp =
-      hostLower === 'localhost' ||
-      hostLower === '127.0.0.1' ||
-      hostLower === '::1' ||
-      hostLower === '0.0.0.0' ||
-      hostLower.startsWith('10.') ||
-      hostLower.startsWith('192.168.') ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(hostLower);
-
-    if (isMetadataHost || (IS_PROD && isPrivateIp)) {
-      return res.status(400).json({ error: 'Scanning internal, loopback, or cloud metadata addresses is disabled for security.' });
+    // DNS-Rebinding + Private CIDR + Metadata SSRF Protection Guard
+    const ssrfCheck = await validateTargetSafety(targetUrl, { isProd: IS_PROD });
+    if (!ssrfCheck.allowed) {
+      return res.status(400).json({ error: ssrfCheck.reason || 'Blocked by SSRF security policy.' });
     }
 
-    log(`Connecting to ${parsedUrl.hostname} over ${parsedUrl.protocol}...`);
+    log(`DNS verified (${ssrfCheck.resolvedIps[0] || parsedUrl.hostname}); connecting over ${parsedUrl.protocol}...`);
 
     // Step 1: Network Handshake & Fetch HTML + Headers
     const fetchStart = Date.now();
@@ -144,7 +173,7 @@ app.post('/api/scan', async (req, res) => {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 CheckMyAPK-Auditor/1.0',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         },
-        maxRedirects: 5,
+        maxRedirects: 3,
         validateStatus: () => true
       });
     } catch (fetchErr: any) {
@@ -154,26 +183,63 @@ app.post('/api/scan', async (req, res) => {
       });
     }
 
+    // Re-check final redirect target against SSRF guard to defeat HTTP redirect-to-localhost/metadata attacks
+    const finalResolvedUrl = String((initialRes.request as any)?.res?.responseUrl || targetUrl);
+    if (finalResolvedUrl !== targetUrl) {
+      const redirectCheck = await validateTargetSafety(finalResolvedUrl, { isProd: IS_PROD });
+      if (!redirectCheck.allowed) {
+        return res.status(400).json({
+          error: `Target redirected to blocked internal resource: ${redirectCheck.reason}`
+        });
+      }
+    }
+
     const latencyMs = Date.now() - fetchStart;
     log(`HTTP handshake complete: HTTP ${initialRes.status} in ${latencyMs}ms`);
 
     const html = typeof initialRes.data === 'string' ? initialRes.data : '';
     const headers = initialRes.headers;
 
-    // Step 2: Extract JavaScript bundles
-    const scriptUrls = extractScriptUrls(html, targetUrl);
-    log(`Discovered ${scriptUrls.length} JavaScript bundles & module chunks to audit`);
+    // Check Domain Ownership Verification (DNS TXT, meta tag, or .well-known)
+    const ownership = await verifyDomainOwnership(targetUrl, html);
+    const verifiedOrLocal = ownership.verified || ssrfCheck.isLoopback;
+    const rateBurstCount = verifiedOrLocal ? 15 : 4;
+    log(
+      ownership.verified
+        ? `Domain ownership verified via ${ownership.method}; full active checks unlocked.`
+        : ssrfCheck.isLoopback
+        ? `Local dev target detected; running full probe suite.`
+        : `Unverified external domain: running safe ${rateBurstCount}-request non-intrusive profile.`
+    );
+
+    // Step 2: Extract JavaScript bundles (filter external origins via SSRF guard)
+    const rawScriptUrls = extractScriptUrls(html, targetUrl);
+    const originSafetyCache = new Map<string, boolean>([[parsedUrl.origin, true]]);
+    const scriptUrls: string[] = [];
+    for (const sUrl of rawScriptUrls.slice(0, 25)) {
+      try {
+        const sOrigin = new URL(sUrl).origin;
+        let ok = originSafetyCache.get(sOrigin);
+        if (ok === undefined) {
+          const chk = await validateTargetSafety(sUrl, { isProd: IS_PROD });
+          ok = chk.allowed;
+          originSafetyCache.set(sOrigin, ok);
+        }
+        if (ok) scriptUrls.push(sUrl);
+      } catch {}
+    }
+    log(`Discovered ${scriptUrls.length} safe JavaScript bundles & module chunks to audit`);
 
     // Step 3: Run key hunter, sensitive artifact checks (.env/.git/.js.map), headers & rate-limit probes
     log(`Executing Secret Hunter & Sensitive Artifact (.env/.git/.js.map) probes...`);
     log(`Probing HTTP Security Headers, Cookies & CORS policies...`);
-    log(`Firing 15-request burst to test Denial-of-Wallet rate limits...`);
+    log(`Testing Denial-of-Wallet rate limits (${rateBurstCount}-request safe profile)...`);
 
     const [keyResult, artifactFindings, headerFindings, rateLimitFinding] = await Promise.all([
       scanForLeakedKeys(scriptUrls),
       scanSensitiveWebArtifacts(targetUrl, scriptUrls),
       Promise.resolve(scanSecurityHeaders(headers)),
-      probeRateLimiting(targetUrl)
+      probeRateLimiting(targetUrl, { burstCount: rateBurstCount, verifiedMode: verifiedOrLocal })
     ]);
 
     // Step 3b: Feed extracted JS bundles + HTML into DB probe, DOM XSS / OpenAPI / GraphQL / JWT deep inspection!
@@ -205,7 +271,7 @@ app.post('/api/scan', async (req, res) => {
     );
 
     const transportFindings: any[] = [];
-    if (parsedUrl.protocol === 'http:' && !isPrivateIp) {
+    if (parsedUrl.protocol === 'http:' && !ssrfCheck.isLoopback) {
       transportFindings.push({
         category: 'Transport Encryption (TLS)',
         type: 'Unencrypted HTTP Website Transport',
@@ -255,6 +321,12 @@ app.post('/api/scan', async (req, res) => {
     const enrichedResponse = {
       ...finalReport,
       webDeepSurface: webDeepResult.surface,
+      domainVerification: {
+        verified: ownership.verified,
+        method: ownership.method || null,
+        token: ownership.token,
+        burstProfile: `${rateBurstCount} reqs`
+      },
       telemetry: {
         latencyMs,
         totalBytesScanned: keyResult.totalBytesScanned,
@@ -276,6 +348,11 @@ app.post('/api/scan', async (req, res) => {
 
 // 🤖 ON-DEMAND AI VULNERABILITY FIX DOCTOR
 app.post('/api/explain-vulnerability', async (req, res) => {
+  const aiRate = checkClientRateLimit(getClientIp(req), 'ai');
+  if (!aiRate.allowed) {
+    res.setHeader('Retry-After', String(aiRate.retryAfterSec));
+    return res.status(429).json({ error: `AI Fix Doctor rate limit reached. Retry in ${aiRate.retryAfterSec}s.` });
+  }
   try {
     const { finding, detectedTech = [], targetUrl = '', framework } = req.body;
     if (!finding || !finding.type) {
@@ -375,8 +452,21 @@ async function runApkAuditPipeline(
     const apiProbePromises = customApiTargets.map(async (apiUrl) => {
       const probeStart = Date.now();
       try {
+        const apiSafety = await validateTargetSafety(apiUrl, { isProd: IS_PROD });
+        if (!apiSafety.allowed) {
+          probedApis.push({
+            url: apiUrl,
+            status: 'Blocked (Internal/Unsafe)',
+            latencyMs: Date.now() - probeStart,
+            cors: 'N/A',
+            hsts: false,
+            reachable: false
+          });
+          return;
+        }
         const apiRes = await axios.get(apiUrl, {
           timeout: 3500,
+          maxRedirects: 2,
           validateStatus: () => true,
           headers: { 'User-Agent': 'CheckMyAPK-Stage3-Auditor/1.0' }
         });
@@ -519,6 +609,11 @@ async function runApkAuditPipeline(
 
 // 📱 MOBILE APK DEEP SECURITY AUDIT ENDPOINT (Sync Direct Response)
 app.post('/api/scan-apk', upload.single('apk'), async (req, res) => {
+  const apkRate = checkClientRateLimit(getClientIp(req), 'apk');
+  if (!apkRate.allowed) {
+    res.setHeader('Retry-After', String(apkRate.retryAfterSec));
+    return res.status(429).json({ error: `APK scan rate limit reached. Retry in ${apkRate.retryAfterSec}s.` });
+  }
   const checked = validateApkUpload(req);
   if (checked.error || !checked.buffer) {
     return res.status(400).json({ error: checked.error });
@@ -532,20 +627,30 @@ app.post('/api/scan-apk', upload.single('apk'), async (req, res) => {
   }
 });
 
-// ⚙️ ASYNC WORKER QUEUE ENDPOINT (Non-blocking APK Deep Audit + Job Polling)
+// ⚙️ ASYNC WORKER QUEUE ENDPOINT (Concurrency-Capped Non-blocking APK Deep Audit + SSE Stream)
 app.post('/api/jobs/scan-apk', upload.single('apk'), (req, res) => {
+  const apkRate = checkClientRateLimit(getClientIp(req), 'apk');
+  if (!apkRate.allowed) {
+    res.setHeader('Retry-After', String(apkRate.retryAfterSec));
+    return res.status(429).json({ error: `APK upload rate limit reached. Retry in ${apkRate.retryAfterSec}s.` });
+  }
+
   const checked = validateApkUpload(req);
   if (checked.error || !checked.buffer) {
     return res.status(400).json({ error: checked.error });
   }
 
+  if (getQueueCapacity().isFull) {
+    return res.status(503).json({ error: 'APK worker queue is at capacity right now. Please retry in a few seconds.' });
+  }
+
   const job = createScanJob('apk', checked.fileName!);
-  const apkBuffer = checked.buffer;
+  let apkBuffer: Buffer | null = checked.buffer;
   const fileName = checked.fileName!;
 
-  // Run pipeline asynchronously in background without blocking HTTP worker thread
-  setImmediate(async () => {
+  const accepted = enqueueJobTask(job.id, async () => {
     try {
+      if (!apkBuffer) throw new Error('APK buffer was unexpectedly released.');
       const report = await runApkAuditPipeline(apkBuffer, fileName, (progress, stage, timeLabel) => {
         pushScanJobProgress(job.id, progress, stage, timeLabel);
       });
@@ -553,14 +658,25 @@ app.post('/api/jobs/scan-apk', upload.single('apk'), (req, res) => {
     } catch (err: any) {
       console.error(`[AsyncJob ${job.id}] Failed:`, err);
       failScanJob(job.id, err?.message || 'Async APK audit failed.');
+    } finally {
+      // Allow immediate garbage collection of large 10-75MB APK binary buffer
+      apkBuffer = null;
     }
   });
+
+  if (!accepted) {
+    failScanJob(job.id, 'APK worker queue saturated.');
+    apkBuffer = null;
+    return res.status(503).json({ error: 'APK worker queue is busy. Please try again shortly.' });
+  }
 
   return res.status(202).json({
     jobId: job.id,
     status: job.status,
     progress: job.progress,
-    pollUrl: `/api/jobs/${job.id}`
+    queuePosition: job.queuePosition,
+    pollUrl: `/api/jobs/${job.id}`,
+    streamUrl: `/api/jobs/${job.id}/stream`
   });
 });
 
@@ -570,6 +686,44 @@ app.get('/api/jobs/:jobId', (req, res) => {
     return res.status(404).json({ error: 'Audit job not found or expired.' });
   }
   return res.json(job);
+});
+
+app.get('/api/jobs/:jobId/stream', (req, res) => {
+  const job = getScanJob(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Audit job not found or expired.' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const sendUpdate = (snapshot: any) => {
+    res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+    if (snapshot.status === 'completed' || snapshot.status === 'failed') {
+      unsubscribe();
+      res.end();
+    }
+  };
+
+  const unsubscribe = subscribeScanJob(job.id, sendUpdate);
+  sendUpdate(job);
+
+  req.on('close', () => {
+    unsubscribe();
+  });
+});
+
+// Handle Multer upload errors (e.g. > MAX_APK_SIZE_MB) with clean JSON responses
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: `APK exceeds the ${MAX_APK_SIZE_MB}MB server memory guard limit.` });
+  }
+  if (err && err.name === 'MulterError') {
+    return res.status(400).json({ error: `Upload error: ${err.message}` });
+  }
+  return next(err);
 });
 
 // Start Server

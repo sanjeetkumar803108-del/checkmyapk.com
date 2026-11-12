@@ -9,8 +9,11 @@ export interface RateLimitFinding {
   owaspRef?: string;
 }
 
-export async function probeRateLimiting(targetUrl: string): Promise<RateLimitFinding> {
-  const BURST_COUNT = 15;
+export async function probeRateLimiting(
+  targetUrl: string,
+  options?: { burstCount?: number; verifiedMode?: boolean }
+): Promise<RateLimitFinding> {
+  const BURST_COUNT = Math.max(2, Math.min(15, options?.burstCount ?? 15));
   const requests: Promise<any>[] = [];
 
   let isApiRoute = false;

@@ -33,6 +33,28 @@ interface FindingCardProps {
   defaultExpanded?: boolean;
 }
 
+function getPlayComplianceTag(finding: FindingProps): string | null {
+  if (finding.severity === 'PASS') return null;
+  const ref = String(finding.owaspRef || '');
+  const t = String(finding.type || '');
+  if (t.includes('Play Console') || t.includes('Target SDK') || t.includes('Tapjacking')) {
+    return 'Play Policy: App & Permissions';
+  }
+  if (ref.startsWith('MASVS-NETWORK') || t.includes('Cleartext') || t.includes('SSL') || t.includes('Pinning') || t.includes('WebView')) {
+    return 'Play Data Safety: Transit TLS';
+  }
+  if (ref.startsWith('MASVS-CRYPTO') || ref.startsWith('MASVS-STORAGE') || t.includes('Secret') || t.includes('allowBackup')) {
+    return 'Play Data Safety: Crypto & Keys';
+  }
+  if (ref.startsWith('MASVS-')) {
+    return 'Play Policy: Device & Network';
+  }
+  if (ref.startsWith('OWASP-API')) {
+    return 'OWASP API Top 10';
+  }
+  return null;
+}
+
 // Built-in framework specific fixes for instant copy-pasting (Web + Mobile APK)
 function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, { filename: string; code: string }> {
   // ── Android Mobile APK Fixes ──
@@ -611,6 +633,14 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                   {finding.owaspRef}
                 </span>
               )}
+              {(() => {
+                const policyTag = getPlayComplianceTag(finding);
+                return policyTag ? (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                    {policyTag}
+                  </span>
+                ) : null;
+              })()}
               <span className="text-[11px] font-bold text-slate-400">
                 {finding.category}
               </span>
@@ -770,20 +800,39 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                       )}
 
                       {aiFixData.codeBlock && (
-                        <div className="mt-2">
-                          <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
-                            <span>File: <strong className="text-cyan-300">{aiFixData.codeBlock.filename}</strong></span>
-                            <button
-                              onClick={() => handleCopy(aiFixData.codeBlock.code)}
-                              className="text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1"
-                            >
-                              <Copy className="w-3 h-3" />
-                              Copy AI Code
-                            </button>
+                        <div className="mt-2 space-y-2">
+                          {aiFixData.beforeCode && (
+                            <div className="rounded-lg border border-rose-500/30 bg-rose-950/20 overflow-hidden">
+                              <div className="px-2.5 py-1 bg-rose-950/40 border-b border-rose-500/25 text-[10px] font-bold text-rose-300">
+                                - Before (Vulnerable Pattern)
+                              </div>
+                              <pre className="p-2.5 text-rose-200/90 font-mono text-[10px] overflow-x-auto select-all">
+                                {aiFixData.beforeCode}
+                              </pre>
+                            </div>
+                          )}
+                          <div className="rounded-lg border border-emerald-500/35 bg-black overflow-hidden">
+                            <div className="flex items-center justify-between px-2.5 py-1 bg-emerald-950/30 border-b border-emerald-500/25 text-[10px] text-slate-300">
+                              <span>
+                                + After (Secure): <strong className="text-cyan-300">{aiFixData.codeBlock.filename}</strong>
+                              </span>
+                              <button
+                                onClick={() => handleCopy(aiFixData.codeBlock.code)}
+                                className="text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1 cursor-pointer"
+                              >
+                                <Copy className="w-3 h-3" />
+                                Copy Fix
+                              </button>
+                            </div>
+                            <pre className="p-2.5 text-emerald-300 font-mono text-[10px] overflow-x-auto select-all">
+                              {aiFixData.codeBlock.code}
+                            </pre>
                           </div>
-                          <pre className="p-2.5 rounded-lg bg-black border border-cyan-900/40 text-emerald-300 font-mono text-[10px] overflow-x-auto select-all">
-                            {aiFixData.codeBlock.code}
-                          </pre>
+                          {aiFixData.verifyCommand && (
+                            <div className="px-2.5 py-1.5 rounded-lg bg-[#050811] border border-white/10 text-[10px] font-mono text-slate-400">
+                              Verify: <span className="text-cyan-300">{aiFixData.verifyCommand}</span>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

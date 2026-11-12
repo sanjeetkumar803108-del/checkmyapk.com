@@ -182,6 +182,12 @@ interface SecurityReport {
       }>;
     };
   };
+  domainVerification?: {
+    verified: boolean;
+    method: string | null;
+    token: string;
+    burstProfile: string;
+  };
   telemetry?: {
     latencyMs?: number;
     totalBytesScanned: number;
@@ -211,24 +217,70 @@ export default function App() {
   const [showLogsModal, setShowLogsModal] = useState(false);
   const [showTrustModal, setShowTrustModal] = useState<'privacy' | 'methodology' | null>(null);
   const [hashCopied, setHashCopied] = useState(false);
-  const [scoreDelta, setScoreDelta] = useState<{ previousScore: number; delta: number } | null>(null);
+  const [scoreDelta, setScoreDelta] = useState<{
+    previousScore: number;
+    delta: number;
+    fixedIssues: string[];
+    newIssues: string[];
+  } | null>(null);
+  const [domainChallenge, setDomainChallenge] = useState<{
+    host: string;
+    token: string;
+    txtRecord: string;
+    metaTag: string;
+  } | null>(null);
   const [masterTab, setMasterTab] = useState<'vercel' | 'nextjs' | 'express'>('vercel');
   const [masterCopied, setMasterCopied] = useState(false);
 
-  const updateScanHistory = (targetKey: string, score: number) => {
+  const updateScanHistory = (targetKey: string, score: number, findingsList: any[] = []) => {
     try {
       const raw = localStorage.getItem('checkmyapk_history');
-      const map: Record<string, { score: number; at: string }> = raw ? JSON.parse(raw) : {};
+      const map: Record<string, { score: number; at: string; findingTypes?: string[] }> = raw ? JSON.parse(raw) : {};
       const prev = map[targetKey];
+      const currentTypes = Array.from(
+        new Set(
+          findingsList
+            .filter((f) => f && f.severity !== 'PASS' && typeof f.type === 'string')
+            .map((f) => `${f.severity}:${f.type}`)
+        )
+      ).slice(0, 60);
+
       if (prev && typeof prev.score === 'number') {
-        setScoreDelta({ previousScore: prev.score, delta: score - prev.score });
+        const prevTypes = Array.isArray(prev.findingTypes) ? prev.findingTypes : [];
+        const prevSet = new Set(prevTypes);
+        const curSet = new Set(currentTypes);
+        const fixedIssues = prevTypes.filter((t) => !curSet.has(t)).map((t) => t.replace(/^[^:]+:/, ''));
+        const newIssues = currentTypes.filter((t) => !prevSet.has(t)).map((t) => t.replace(/^[^:]+:/, ''));
+        setScoreDelta({
+          previousScore: prev.score,
+          delta: score - prev.score,
+          fixedIssues,
+          newIssues
+        });
       } else {
         setScoreDelta(null);
       }
-      map[targetKey] = { score, at: new Date().toISOString() };
+      map[targetKey] = { score, at: new Date().toISOString(), findingTypes: currentTypes };
       localStorage.setItem('checkmyapk_history', JSON.stringify(map));
     } catch (e) {
       setScoreDelta(null);
+    }
+  };
+
+  const handleLoadDomainChallenge = async () => {
+    const clean = url.trim();
+    if (!clean) {
+      setError('Enter your website URL above first to generate a domain ownership token.');
+      return;
+    }
+    try {
+      const r = await fetch(`/api/domain-verify/challenge?targetUrl=${encodeURIComponent(clean)}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Could not generate challenge');
+      setDomainChallenge(d);
+      setError(null);
+    } catch (err: any) {
+      setError(err?.message || 'Could not generate domain challenge.');
     }
   };
 
@@ -438,7 +490,7 @@ export default function App() {
 
       const data = await res.json();
       setReport(data);
-      updateScanHistory(`web:${data.targetUrl}`, data.score);
+      updateScanHistory(`web:${data.targetUrl}`, data.score, data.findings);
       const hasVulns = data.findings?.some((f: any) => f.severity !== 'PASS');
       setFilter(hasVulns ? 'vulns' : 'all');
       setLoading(false);
@@ -476,11 +528,54 @@ export default function App() {
         throw new Error(errJson.error || `Server error queuing APK audit (${enqueueRes.status})`);
       }
 
-      const { jobId } = await enqueueRes.json();
+      const { jobId, streamUrl } = await enqueueRes.json();
       const deadline = Date.now() + 180000;
 
+      const finishWithJob = (job: any) => {
+        const data = job.result;
+        setReport(data);
+        updateScanHistory(`apk:${data.apkMeta?.packageName || selectedFile.name}`, data.score, data.findings);
+        const hasVulns = data.findings?.some((f: any) => f.severity !== 'PASS');
+        setFilter(hasVulns ? 'vulns' : 'all');
+        setLoading(false);
+      };
+
+      // Prefer real-time Server-Sent Events (zero redundant polling), with 1000ms poll fallback
+      const sseCompleted = await new Promise<boolean>((resolve, reject) => {
+        if (typeof EventSource === 'undefined') {
+          resolve(false);
+          return;
+        }
+        let settled = false;
+        const es = new EventSource(streamUrl || `/api/jobs/${jobId}/stream`);
+        es.onmessage = (evt) => {
+          try {
+            const job = JSON.parse(evt.data);
+            if (job.currentStage) {
+              setActiveStepMessage(`[${job.progress ?? 0}%] ${job.currentStage}`);
+            }
+            if (job.status === 'completed' && job.result) {
+              settled = true;
+              es.close();
+              finishWithJob(job);
+              resolve(true);
+            } else if (job.status === 'failed') {
+              settled = true;
+              es.close();
+              reject(new Error(job.error || 'APK audit job failed.'));
+            }
+          } catch {}
+        };
+        es.onerror = () => {
+          es.close();
+          if (!settled) resolve(false);
+        };
+      });
+
+      if (sseCompleted) return;
+
       while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 350));
+        await new Promise((r) => setTimeout(r, 1000));
         const pollRes = await fetch(`/api/jobs/${jobId}`);
         if (!pollRes.ok) {
           throw new Error(`Lost connection to audit job ${jobId}`);
@@ -490,12 +585,7 @@ export default function App() {
           setActiveStepMessage(`[${job.progress ?? 0}%] ${job.currentStage}`);
         }
         if (job.status === 'completed' && job.result) {
-          const data = job.result;
-          setReport(data);
-          updateScanHistory(`apk:${data.apkMeta?.packageName || selectedFile.name}`, data.score);
-          const hasVulns = data.findings?.some((f: any) => f.severity !== 'PASS');
-          setFilter(hasVulns ? 'vulns' : 'all');
-          setLoading(false);
+          finishWithJob(job);
           return;
         }
         if (job.status === 'failed') {
@@ -833,6 +923,33 @@ export default function App() {
                         </div>
                       </div>
                     )}
+                    <div className="mt-2 flex items-center justify-between flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={handleLoadDomainChallenge}
+                        className="text-[11px] font-bold text-emerald-300 hover:text-emerald-200 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        <span>Verify Domain Ownership (Unlock Full 15-Request Rate Burst)</span>
+                      </button>
+                      <span className="text-[10px] text-slate-500">
+                        Unverified public targets use a safe 4-request gentle profile
+                      </span>
+                    </div>
+
+                    {domainChallenge && (
+                      <div className="mt-2 p-3 rounded-2xl bg-[#050811]/90 border border-emerald-500/25 text-[10px] font-mono space-y-1.5 text-slate-300">
+                        <div className="text-emerald-300 font-bold">
+                          Add either TXT record or HTML Meta Tag to verify &quot;{domainChallenge.host}&quot;:
+                        </div>
+                        <div className="p-1.5 rounded bg-black/60 break-all select-all text-cyan-300">
+                          DNS TXT: {domainChallenge.txtRecord}
+                        </div>
+                        <div className="p-1.5 rounded bg-black/60 break-all select-all text-emerald-300">
+                          HTML Meta: {domainChallenge.metaTag}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Quick Test Targets */}
@@ -1009,9 +1126,30 @@ export default function App() {
                           : scoreDelta.delta < 0
                           ? `${scoreDelta.delta} pts vs prev (${scoreDelta.previousScore}→${report.score})`
                           : `Consistent (${report.score}/100)`}
+                        {(scoreDelta.fixedIssues.length > 0 || scoreDelta.newIssues.length > 0) &&
+                          ` • ${scoreDelta.fixedIssues.length} Fixed • ${scoreDelta.newIssues.length} New`}
+                      </span>
+                    )}
+                    {!report.isApkAudit && report.domainVerification && (
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                          report.domainVerification.verified
+                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+                            : 'bg-white/[0.05] text-slate-300 border-white/10'
+                        }`}
+                      >
+                        {report.domainVerification.verified
+                          ? `Verified Owner (${report.domainVerification.method})`
+                          : `Safe Mode (${report.domainVerification.burstProfile})`}
                       </span>
                     )}
                   </div>
+                  {scoreDelta && scoreDelta.fixedIssues.length > 0 && (
+                    <div className="mt-1 text-[10px] text-emerald-300 font-semibold">
+                      Resolved since last scan: {scoreDelta.fixedIssues.slice(0, 3).join(' • ')}
+                      {scoreDelta.fixedIssues.length > 3 ? ` (+${scoreDelta.fixedIssues.length - 3} more)` : ''}
+                    </div>
+                  )}
                   {report.isApkAudit && report.apkMeta?.sha256 && (
                     <div className="flex items-center gap-2 flex-wrap mt-1.5 text-[10px] font-mono text-slate-400">
                       <button
@@ -1590,6 +1728,33 @@ export default function App() {
                               </div>
                             </div>
                           ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="mt-2 flex items-center justify-between flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={handleLoadDomainChallenge}
+                        className="text-[11px] font-bold text-emerald-300 hover:text-emerald-200 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        <span>Verify Domain Ownership (Unlock Full 15-Request Rate Burst)</span>
+                      </button>
+                      <span className="text-[10px] text-slate-500">
+                        Unverified public targets use a safe 4-request gentle profile
+                      </span>
+                    </div>
+
+                    {domainChallenge && (
+                      <div className="mt-2 p-3 rounded-2xl bg-[#050811]/90 border border-emerald-500/25 text-[10px] font-mono space-y-1.5 text-slate-300">
+                        <div className="text-emerald-300 font-bold">
+                          Add either TXT record or HTML Meta Tag to verify &quot;{domainChallenge.host}&quot;:
+                        </div>
+                        <div className="p-1.5 rounded bg-black/60 break-all select-all text-cyan-300">
+                          DNS TXT: {domainChallenge.txtRecord}
+                        </div>
+                        <div className="p-1.5 rounded bg-black/60 break-all select-all text-emerald-300">
+                          HTML Meta: {domainChallenge.metaTag}
                         </div>
                       </div>
                     )}
