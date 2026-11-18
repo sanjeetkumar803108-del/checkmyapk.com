@@ -179,13 +179,19 @@ export const PricingPage: React.FC<PricingPageProps> = ({
             </button>
           </div>
 
-          <a
-            href="#full-comparison-table"
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold text-cyan-300 hover:text-cyan-200 bg-cyan-500/10 hover:bg-cyan-500/15 border border-cyan-400/25 transition-all"
+          <button
+            type="button"
+            onClick={() => {
+              const target = document.getElementById('full-comparison-table');
+              if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold text-cyan-300 hover:text-cyan-200 bg-cyan-500/10 hover:bg-cyan-500/15 border border-cyan-400/25 transition-all cursor-pointer"
           >
             <span>Jump to Comparison Table</span>
             <ArrowDown className="w-3.5 h-3.5" />
-          </a>
+          </button>
         </div>
       </section>
 

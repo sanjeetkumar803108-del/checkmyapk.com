@@ -98,7 +98,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Enter your name"
-              className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#050811]/85 border border-white/10 focus:border-cyan-400/55 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500"
+              className="w-full pl-10 pr-3.5 py-2.5 rounded-md bg-[#050811]/85 border border-white/10 focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500"
             />
           </div>
         </div>
@@ -115,7 +115,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
-              className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#050811]/85 border border-white/10 focus:border-cyan-400/55 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500"
+              className="w-full pl-10 pr-3.5 py-2.5 rounded-md bg-[#050811]/85 border border-white/10 focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500"
             />
           </div>
         </div>
@@ -134,7 +134,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             placeholder="Write your topic, question, or issue here..."
-            className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#050811]/85 border border-white/10 focus:border-cyan-400/55 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500 resize-y"
+            className="w-full pl-10 pr-3.5 py-2.5 rounded-md bg-[#050811]/85 border border-white/10 focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500 resize-y"
           />
         </div>
       </div>
@@ -180,7 +180,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
         <button
           type="submit"
           disabled={sending}
-          className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-400 to-emerald-400 hover:brightness-110 text-slate-950 font-black text-xs sm:text-sm inline-flex items-center gap-2 transition-all shadow-md cursor-pointer disabled:opacity-60"
+          className="wb-primary-btn h-9 px-4 rounded-md font-semibold text-xs sm:text-[13px] inline-flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
         >
           <Send className="w-3.5 h-3.5" />
           <span>{sending ? 'Sending...' : 'Send Message'}</span>
