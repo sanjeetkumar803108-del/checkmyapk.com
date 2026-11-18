@@ -19,6 +19,7 @@ import {
   Code2,
   Smartphone,
   Globe,
+  Upload,
   UploadCloud,
   ShieldCheck,
   Lock,
@@ -42,6 +43,9 @@ import { ScoreGauge } from './components/ScoreGauge';
 import { FindingCard } from './components/FindingCard';
 import { LiveTerminalLogs } from './components/LiveTerminalLogs';
 import { AuthModal } from './components/AuthModal';
+import { DeterministicOutputWorkbench } from './components/DeterministicOutputWorkbench';
+import { HeroKineticHeadline, HeroRulesCountUp } from './components/HeroKineticHeadline';
+import { SecurityReportDashboard } from './components/SecurityReportDashboard';
 import { AccountPage } from './components/AccountPage';
 import { HomepageSections } from './components/HomepageSections';
 import { PricingPage } from './components/PricingPage';
@@ -268,9 +272,6 @@ export default function App() {
   const [masterTab, setMasterTab] = useState<'vercel' | 'nextjs' | 'express'>('vercel');
   const [masterCopied, setMasterCopied] = useState(false);
   const [mdCopied, setMdCopied] = useState(false);
-  const [previewFindingIdx, setPreviewFindingIdx] = useState(0);
-  const [previewPatchCopied, setPreviewPatchCopied] = useState(false);
-  const [cliCopied, setCliCopied] = useState(false);
   const [heroIntroDone, setHeroIntroDone] = useState(false);
   const [apkPreFlightHash, setApkPreFlightHash] = useState<string | null>(null);
   const [apkHashing, setApkHashing] = useState(false);
@@ -282,6 +283,11 @@ export default function App() {
     plan: 'pro' | 'agency';
     billingCycle: 'monthly' | 'annual';
   } | null>(null);
+  const [pendingScan, setPendingScan] = useState<
+    | { mode: 'web'; targetUrl: string }
+    | { mode: 'apk'; file: File }
+    | null
+  >(null);
   const [checkoutBusyPlan, setCheckoutBusyPlan] = useState<AccountPlan | null>(null);
   const [checkoutBanner, setCheckoutBanner] = useState<{
     type: 'success' | 'error';
@@ -313,6 +319,11 @@ export default function App() {
     root.classList.toggle('light', nextTheme === 'light');
     root.classList.toggle('dark', nextTheme === 'dark');
     root.style.colorScheme = nextTheme;
+    root.style.backgroundColor = nextTheme === 'light' ? '#ffffff' : '#070a09';
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    if (themeMeta) {
+      themeMeta.setAttribute('content', nextTheme === 'light' ? '#ffffff' : '#070a09');
+    }
     try {
       localStorage.setItem('checkmyapk_theme', nextTheme);
     } catch {}
@@ -323,7 +334,7 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    const introTimer = window.setTimeout(() => setHeroIntroDone(true), 1600);
+    const introTimer = window.setTimeout(() => setHeroIntroDone(true), 3200);
     return () => {
       window.clearTimeout(introTimer);
       fallbackThemeTimersRef.current.forEach((id) => window.clearTimeout(id));
@@ -599,6 +610,28 @@ export default function App() {
     }
   };
 
+  const goHome = () => {
+    setMobileNavOpen(false);
+    setShowAccountPage(false);
+    setShowPricingPage(false);
+    setShowTrustModal(null);
+    setAuthModalMode(null);
+    setReport(null);
+    setLoading(false);
+    setError(null);
+    setCheckoutBanner(null);
+    if (typeof window !== 'undefined') {
+      if (
+        window.location.pathname !== '/' ||
+        window.location.search !== '' ||
+        window.location.hash !== ''
+      ) {
+        window.history.pushState({ page: 'home' }, '', '/');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
   const navigateSection = (sectionId: string, preferredMode?: 'apk' | 'web') => {
     setShowAccountPage(false);
     setShowPricingPage(false);
@@ -662,12 +695,12 @@ export default function App() {
     plan: AccountPlan,
     billingCycle: 'monthly' | 'annual' = 'monthly'
   ) => {
-    if (plan === 'free') {
+    if (plan === 'free' || currentUser?.isOwner) {
       if (!currentUser) {
         setAuthModalMode('register');
         return;
       }
-      if (currentUser.plan === 'free') {
+      if (currentUser.plan === plan) {
         openAccountPage();
         return;
       }
@@ -676,7 +709,7 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ plan: 'free' }),
+          body: JSON.stringify({ plan }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -996,11 +1029,27 @@ export default function App() {
     setTimeout(() => setMasterCopied(false), 2000);
   };
 
+  const promptSignInForScan = (
+    pending: { mode: 'web'; targetUrl: string } | { mode: 'apk'; file: File }
+  ) => {
+    setError(null);
+    setPendingScan(pending);
+    setAuthModalMode('login');
+  };
+
   // 🌐 Scan Web Target
-  const handleScanWeb = async (targetToScan?: string) => {
+  const handleScanWeb = async (targetToScan?: string, authUserOverride?: UserAccount | null) => {
     const finalUrl = (targetToScan || url).trim();
     if (!finalUrl) return;
 
+    const activeUser = authUserOverride ?? currentUser;
+    if (!activeUser) {
+      setUrl(finalUrl);
+      promptSignInForScan({ mode: 'web', targetUrl: finalUrl });
+      return;
+    }
+
+    const effectivePolicy = getPlanPolicy(activeUser.plan);
     closeAccountPage(true);
     setUrl(finalUrl);
     setLoading(true);
@@ -1014,7 +1063,7 @@ export default function App() {
       'Scanning JS bundles for leaked secrets & Static DOM XSS sinks...',
       'Auditing JWT claims, HTTP Security Headers & CORS origin policies...',
       'Testing Firebase / Supabase rules & passive API route error leaks...',
-      activePlanPolicy.features.burst15Req
+      effectivePolicy.features.burst15Req
         ? 'Sending 15-request burst to test Denial-of-Wallet rate limits...'
         : 'Running safe 4-request rate-limit probe (Starter tier)...',
       'Invoking Gemini Neural Engine for custom architectural threat synthesis...'
@@ -1030,20 +1079,28 @@ export default function App() {
 
     try {
       const payload: Record<string, string> = { targetUrl: finalUrl };
-      if (activePlanPolicy.features.authenticatedWebScan && webAuthHeader.trim()) {
+      if (effectivePolicy.features.authenticatedWebScan && webAuthHeader.trim()) {
         payload.authHeader = webAuthHeader.trim();
       }
-      if (activePlanPolicy.features.authenticatedWebScan && webAuthCookie.trim()) {
+      if (effectivePolicy.features.authenticatedWebScan && webAuthCookie.trim()) {
         payload.authCookie = webAuthCookie.trim();
       }
 
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify(payload)
       });
 
       clearInterval(stepInterval);
+
+      if (res.status === 401) {
+        setCurrentUser(null);
+        setLoading(false);
+        promptSignInForScan({ mode: 'web', targetUrl: finalUrl });
+        return;
+      }
 
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
@@ -1066,18 +1123,26 @@ export default function App() {
   };
 
   // 📱 Scan APK File Upload (Async Worker Queue + Live Telemetry Polling)
-  const handleScanApk = async (fileToScan?: File) => {
+  const handleScanApk = async (fileToScan?: File, authUserOverride?: UserAccount | null) => {
     const selectedFile = fileToScan || apkFile;
     if (!selectedFile) {
       setError('Please select or drop an Android .apk file to begin.');
       return;
     }
 
-    const maxBytes = activePlanPolicy.maxApkMb * 1024 * 1024;
+    const activeUser = authUserOverride ?? currentUser;
+    if (!activeUser) {
+      setApkFile(selectedFile);
+      promptSignInForScan({ mode: 'apk', file: selectedFile });
+      return;
+    }
+
+    const effectivePolicy = getPlanPolicy(activeUser.plan);
+    const maxBytes = effectivePolicy.maxApkMb * 1024 * 1024;
     if (selectedFile.size > maxBytes) {
       const fileSizeMb = (selectedFile.size / (1024 * 1024)).toFixed(1);
       setError(
-        `APK file (${fileSizeMb} MB) exceeds your ${activePlanPolicy.name} limit of ${activePlanPolicy.maxApkMb} MB. Upgrade to Pro (75 MB) or Team & Agency (150 MB).`
+        `APK file (${fileSizeMb} MB) exceeds your ${effectivePolicy.name} limit of ${effectivePolicy.maxApkMb} MB. Upgrade to Pro (75 MB) or Team & Agency (150 MB).`
       );
       return;
     }
@@ -1094,8 +1159,16 @@ export default function App() {
 
       const enqueueRes = await fetch('/api/jobs/scan-apk', {
         method: 'POST',
+        credentials: 'same-origin',
         body: formData
       });
+
+      if (enqueueRes.status === 401) {
+        setCurrentUser(null);
+        setLoading(false);
+        promptSignInForScan({ mode: 'apk', file: selectedFile });
+        return;
+      }
 
       if (!enqueueRes.ok) {
         const errJson = await enqueueRes.json().catch(() => ({}));
@@ -1185,6 +1258,9 @@ export default function App() {
       if (file.name.endsWith('.apk')) {
         setApkFile(file);
         setError(null);
+        if (!currentUser) {
+          promptSignInForScan({ mode: 'apk', file });
+        }
       } else {
         setError('Please upload a valid Android package file (.apk).');
       }
@@ -1220,16 +1296,16 @@ export default function App() {
         <div className="max-w-6xl mx-auto h-14 px-4 sm:px-6 flex items-center justify-between gap-4">
           {/* Left: Precision Brand Mark + Left-Aligned Workspace Navigation */}
           <div className="flex items-center h-full gap-5">
-            <button
-              type="button"
-              onClick={() => {
-                setMobileNavOpen(false);
-                closeAccountPage(true);
-                closePricingPage(true);
-                setReport(null);
-                setError(null);
+            <a
+              href="/"
+              aria-label="CheckMyAPK Homepage"
+              onClick={(e) => {
+                if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                  e.preventDefault();
+                  goHome();
+                }
               }}
-              className="flex items-center gap-2.5 cursor-pointer group select-none focus:outline-none"
+              className="flex items-center gap-2.5 cursor-pointer group select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400/60 rounded-lg"
             >
               <span className="nav-brand-mark w-7 h-7 rounded-[7px] bg-white text-slate-950 border border-white/15 flex items-center justify-center shrink-0 transition-transform duration-150 group-hover:scale-[1.03]">
                 <svg
@@ -1256,7 +1332,7 @@ export default function App() {
               <span className="font-display font-semibold text-[15px] tracking-[-0.03em] text-white leading-none">
                 CheckMyAPK
               </span>
-            </button>
+            </a>
 
             <span className="hidden md:block h-4 w-px bg-white/10 nav-divider" aria-hidden="true" />
 
@@ -1546,9 +1622,28 @@ export default function App() {
             onOpenPricingPage={openPricingPage}
             onRescanWeb={(targetUrl) => {
               closeAccountPage(true);
+              setShowPricingPage(false);
               setScanMode('web');
               setUrl(targetUrl);
-              handleScanWeb(targetUrl);
+              void handleScanWeb(targetUrl);
+              window.setTimeout(() => {
+                document
+                  .getElementById('scanner-command')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }, 80);
+            }}
+            onRescanApk={() => {
+              closeAccountPage(true);
+              setShowPricingPage(false);
+              setReport(null);
+              setLoading(false);
+              setError(null);
+              setScanMode('apk');
+              window.setTimeout(() => {
+                document
+                  .getElementById('scanner-command')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }, 80);
             }}
           />
         )}
@@ -1578,60 +1673,18 @@ export default function App() {
                   <span>OWASP MASVS v2 · Static &amp; Live Probes</span>
                 </div>
 
-                <h1
-                  aria-label="Find leaked secrets and flaws in your APK or Web App."
-                  className="font-display font-bold text-4xl sm:text-6xl lg:text-[66px] leading-[1.07] tracking-[-0.045em] text-white"
-                >
-                  <span className="inline-flex flex-wrap items-baseline justify-center gap-x-[0.26em] gap-y-1">
-                    {[
-                      { text: 'Find', cls: 'text-white' },
-                      { text: 'leaked', cls: 'wb-accent-ink' },
-                      { text: 'secrets', cls: 'wb-accent-ink' },
-                      { text: 'and', cls: 'text-white' },
-                      { text: 'flaws', cls: 'text-white' },
-                    ].map((word, idx) => (
-                      <span key={word.text} className="wb-word-mask">
-                        <span
-                          className={`${heroIntroDone ? 'inline-block' : 'wb-word-inner'} ${word.cls}`}
-                          style={heroIntroDone ? undefined : { animationDelay: `${110 + idx * 75}ms` }}
-                        >
-                          {word.text}
-                        </span>
-                      </span>
-                    ))}
-                  </span>
-                  <br className="hidden sm:block" />{' '}
-                  <span className="inline-flex flex-wrap items-baseline justify-center gap-x-[0.26em] gap-y-1">
-                    {[
-                      { text: 'in', cls: 'wb-headline-muted' },
-                      { text: 'your', cls: 'wb-headline-muted' },
-                      { text: 'APK', cls: 'text-white' },
-                      { text: 'or', cls: 'wb-headline-muted' },
-                      { text: 'Web', cls: 'text-white' },
-                      { text: 'App.', cls: 'text-white' },
-                    ].map((word, idx) => (
-                      <span key={`${word.text}-${idx}`} className="wb-word-mask">
-                        <span
-                          className={`${heroIntroDone ? 'inline-block' : 'wb-word-inner'} ${word.cls}`}
-                          style={heroIntroDone ? undefined : { animationDelay: `${500 + idx * 75}ms` }}
-                        >
-                          {word.text}
-                        </span>
-                      </span>
-                    ))}
-                  </span>
-                </h1>
+                <HeroKineticHeadline introDone={heroIntroDone} />
 
                 <p
                   className={`${heroIntroDone ? '' : 'wb-stage-reveal'} text-sm sm:text-base text-slate-400 leading-relaxed max-w-xl mx-auto`}
-                  style={heroIntroDone ? undefined : { animationDelay: '940ms' }}
+                  style={heroIntroDone ? undefined : { animationDelay: '1350ms' }}
                 >
                   Decompile Android binaries or probe live endpoints in seconds. Deterministic findings, exact file paths, and copy-paste patches with zero server retention.
                 </p>
 
                 <div
                   className={`${heroIntroDone ? '' : 'wb-stage-reveal'} flex flex-wrap items-center justify-center gap-3 pt-1`}
-                  style={heroIntroDone ? undefined : { animationDelay: '1040ms' }}
+                  style={heroIntroDone ? undefined : { animationDelay: '1480ms' }}
                 >
                   <button
                     type="button"
@@ -1660,10 +1713,12 @@ export default function App() {
 
                 <div
                   className={`${heroIntroDone ? '' : 'wb-stage-reveal'} grid grid-cols-3 gap-6 sm:gap-12 pt-8 mt-2 border-t border-white/10 w-full max-w-lg`}
-                  style={heroIntroDone ? undefined : { animationDelay: '1140ms' }}
+                  style={heroIntroDone ? undefined : { animationDelay: '1580ms' }}
                 >
                   <div>
-                    <div className="font-mono text-base sm:text-lg font-semibold text-white">35+</div>
+                    <div className="font-mono text-base sm:text-lg font-semibold text-white">
+                      <HeroRulesCountUp target={35} startDelayMs={1580} durationMs={1150} introDone={heroIntroDone} />
+                    </div>
                     <div className="text-[11px] text-slate-400 mt-0.5">Security rules</div>
                   </div>
                   <div>
@@ -1716,233 +1771,110 @@ export default function App() {
               </div>
             </div>
 
-            {/* ── Below-the-Fold Full-Width 2-Pane Security IDE Workbench + Live CLI Preview ── */}
+            {/* ── Ultra-Clean Minimal Scanner Box ── */}
             <section id="scanner-command" className="scroll-mt-24 space-y-5">
-              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 text-left">
-                <div className="space-y-1">
-                  <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-emerald-400 font-semibold">
-                    Interactive Workbench
-                  </span>
-                  <h2 className="text-2xl sm:text-[28px] font-display font-semibold tracking-[-0.03em] text-white">
-                    Upload an Android APK or audit a live URL.
-                  </h2>
-                </div>
-                <span className="font-mono text-[11px] text-slate-500">
-                  RAM-only · Max {activePlanPolicy.maxApkMb}MB · {activePlanPolicy.name}
-                </span>
-              </div>
+              <h2 className="text-center text-2xl sm:text-[28px] font-display font-semibold tracking-[-0.03em] text-white">
+                Upload an APK or audit a live URL.
+              </h2>
 
-              {(() => {
-                const targetArmed =
-                  scanMode === 'apk' ? Boolean(apkFile) : url.trim().length > 0;
-                const liveCliCmd =
-                  scanMode === 'apk'
-                    ? apkFile
-                      ? `checkmyapk audit ./${apkFile.name}${
-                          apkPreFlightHash ? ` --sha256 ${apkPreFlightHash.slice(0, 12)}` : ''
-                        } --masvs-v2 --ram-only`
-                      : `checkmyapk audit ./app-release.apk --masvs-v2 --ram-only`
-                    : `checkmyapk probe ${url.trim() || 'https://your-website.com'} --headers --ast --burst=${
-                        activePlanPolicy.features.burst15Req ? 15 : 4
-                      }`;
+              <div className="max-w-2xl mx-auto wb-bezel p-1.5 rounded-2xl text-left">
+                <div className="wb-surface rounded-xl overflow-hidden">
+                  {/* Minimal 2-Tab Bar */}
+                  <div className="flex items-center border-b border-white/10 px-4">
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => {
+                        setScanMode('apk');
+                        setError(null);
+                      }}
+                      className={`relative py-3.5 px-3 text-xs sm:text-[13px] transition-colors inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer ${
+                        scanMode === 'apk'
+                          ? 'text-white font-semibold'
+                          : 'text-slate-400 hover:text-white font-medium'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5" />
+                      <span>Android APK</span>
+                      {scanMode === 'apk' && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute left-3 right-3 -bottom-px h-[2px] bg-emerald-500"
+                        />
+                      )}
+                    </button>
 
-                const armedStages =
-                  scanMode === 'apk'
-                    ? [
-                        {
-                          step: '01',
-                          name: 'AndroidManifest.xml',
-                          detail: 'Debuggable flag, backup rules & exported IPC components',
-                        },
-                        {
-                          step: '02',
-                          name: 'classes*.dex Bytecode',
-                          detail: 'High-entropy API keys, secrets & weak cipher detection',
-                        },
-                        {
-                          step: '03',
-                          name: 'lib/**/*.so (ELF64)',
-                          detail: 'NX stack, PIE, Stack Canary & Full RELRO hardening',
-                        },
-                        {
-                          step: '04',
-                          name: 'Auto Backend Probes',
-                          detail: 'Live TLS, CORS & anonymous Firebase / Supabase checks',
-                        },
-                      ]
-                    : [
-                        {
-                          step: '01',
-                          name: 'JS Bundle AST Scan',
-                          detail: 'Leaked keys, exposed tokens & DOM XSS sink analysis',
-                        },
-                        {
-                          step: '02',
-                          name: 'Artifact Exposure',
-                          detail: 'Public .env, .git, .js.map & hidden config discovery',
-                        },
-                        {
-                          step: '03',
-                          name: 'Transport & Headers',
-                          detail: 'TLS posture, HSTS, CSP, SRI & HttpOnly cookie flags',
-                        },
-                        {
-                          step: '04',
-                          name: 'Rate-Limit Burst',
-                          detail: `${
-                            activePlanPolicy.features.burst15Req ? '15-request' : '4-request safe'
-                          } Denial-of-Wallet stress profile`,
-                        },
-                      ];
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => {
+                        setScanMode('web');
+                        setError(null);
+                      }}
+                      className={`relative py-3.5 px-3 text-xs sm:text-[13px] transition-colors inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer ${
+                        scanMode === 'web'
+                          ? 'text-white font-semibold'
+                          : 'text-slate-400 hover:text-white font-medium'
+                      }`}
+                    >
+                      <Globe className="w-3.5 h-3.5" />
+                      <span>Website &amp; API</span>
+                      {scanMode === 'web' && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute left-3 right-3 -bottom-px h-[2px] bg-emerald-500"
+                        />
+                      )}
+                    </button>
+                  </div>
 
-                return (
-                  <div className="wb-bezel p-1.5 rounded-2xl text-left">
-                    <div className="wb-surface rounded-xl overflow-hidden">
-                      {/* IDE Header Bar: Flush Underline Mode Tabs + Live Status */}
-                      <div className="flex items-center justify-between border-b border-white/10 px-4 gap-2">
-                        <div className="flex items-center">
-                          <button
-                            type="button"
-                            disabled={loading}
-                            onClick={() => {
-                              setScanMode('apk');
-                              setError(null);
-                            }}
-                            className={`relative py-3.5 px-3 text-xs sm:text-[13px] transition-colors inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer ${
-                              scanMode === 'apk'
-                                ? 'text-white font-semibold'
-                                : 'text-slate-400 hover:text-white font-medium'
-                            }`}
-                          >
-                            <Smartphone className="w-3.5 h-3.5" />
-                            <span>Android APK</span>
-                            <span className="font-mono text-[10px] text-slate-400 bg-white/[0.05] px-1.5 py-0.5 rounded">
-                              .apk
-                            </span>
-                            {scanMode === 'apk' && (
-                              <span
-                                aria-hidden="true"
-                                className="absolute left-3 right-3 -bottom-px h-[2px] bg-emerald-500"
-                              />
-                            )}
-                          </button>
-
-                          <button
-                            type="button"
-                            disabled={loading}
-                            onClick={() => {
-                              setScanMode('web');
-                              setError(null);
-                            }}
-                            className={`relative py-3.5 px-3 text-xs sm:text-[13px] transition-colors inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer ${
-                              scanMode === 'web'
-                                ? 'text-white font-semibold'
-                                : 'text-slate-400 hover:text-white font-medium'
-                            }`}
-                          >
-                            <Globe className="w-3.5 h-3.5" />
-                            <span>Website &amp; API</span>
-                            <span className="font-mono text-[10px] text-slate-400 bg-white/[0.05] px-1.5 py-0.5 rounded">
-                              URL
-                            </span>
-                            {scanMode === 'web' && (
-                              <span
-                                aria-hidden="true"
-                                className="absolute left-3 right-3 -bottom-px h-[2px] bg-emerald-500"
-                              />
-                            )}
-                          </button>
+                  {/* Clean Single-Pane Body */}
+                  <div className="p-5 sm:p-6 space-y-4">
+                    {loading ? (
+                      <div className="space-y-4 py-1">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/35 text-emerald-400 flex items-center justify-center shrink-0">
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-semibold text-white">
+                              {scanMode === 'apk' ? 'Scanning APK...' : 'Scanning URL...'}
+                            </h3>
+                            <p className="text-[11px] font-mono text-emerald-400 truncate">
+                              {activeStepMessage}
+                            </p>
+                          </div>
                         </div>
 
-                        <span className="hidden sm:inline-flex items-center gap-2 font-mono text-[10px] text-slate-400 shrink-0">
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              targetArmed ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-500'
-                            }`}
-                            aria-hidden="true"
-                          />
-                          <span>{targetArmed ? 'TARGET ARMED · MASVS v2.1' : 'MASVS v2.1 · 35 RULES'}</span>
-                        </span>
+                        <LiveTerminalLogs
+                          targetUrl={scanMode === 'apk' ? apkFile?.name || 'Android Package' : url}
+                          isApkMode={scanMode === 'apk'}
+                        />
                       </div>
-
-                      {/* Live Reactive CLI Command Preview Strip */}
-                      <div className="px-4 py-2.5 border-b border-white/10 wb-surface-muted border-x-0 border-t-0 flex items-center justify-between gap-3 font-mono text-[11px]">
-                        <div className="flex items-center gap-2 min-w-0 overflow-x-auto">
-                          <span className="text-emerald-400 select-none shrink-0">$</span>
-                          <code className="text-slate-300 whitespace-nowrap select-all">
-                            {liveCliCmd}
-                          </code>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard
-                              ?.writeText(liveCliCmd)
-                              .then(() => {
-                                setCliCopied(true);
-                                setTimeout(() => setCliCopied(false), 1600);
-                              })
-                              .catch(() => {});
-                          }}
-                          title="Copy CLI preview command"
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 text-[10px] text-slate-400 hover:text-white transition-colors cursor-pointer shrink-0"
-                        >
-                          {cliCopied ? (
-                            <Check className="w-3 h-3 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3 h-3" />
-                          )}
-                          <span className="hidden sm:inline">{cliCopied ? 'Copied' : 'Copy'}</span>
-                        </button>
-                      </div>
-
-                      {/* 2-Pane Connected IDE Body */}
-                      <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-white/10">
-                        {/* Left Pane (60%): Optical Scanner Reticle / URL Input Console / Inline Live Scan */}
-                        <div className="lg:col-span-7 p-5 sm:p-6 flex flex-col justify-between gap-4">
-                          {loading ? (
-                            <div className="space-y-4 py-2">
-                              <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/35 text-emerald-400 flex items-center justify-center shrink-0">
-                                  <RefreshCw className="w-5 h-5 animate-spin" />
-                                </div>
-                                <div className="min-w-0">
-                                  <h3 className="text-sm font-semibold text-white">
-                                    {scanMode === 'apk'
-                                      ? 'Decompiling & Auditing APK Binary...'
-                                      : 'Running Live Security Probes...'}
-                                  </h3>
-                                  <p className="text-[11px] font-mono text-emerald-400 truncate mt-0.5">
-                                    ❯ {activeStepMessage}
-                                  </p>
-                                </div>
-                              </div>
-
-                              <LiveTerminalLogs
-                                targetUrl={scanMode === 'apk' ? apkFile?.name || 'Android Package' : url}
-                                isApkMode={scanMode === 'apk'}
-                              />
-                            </div>
-                          ) : (
-                            <>
-                          {/* APK MODE */}
-                          {scanMode === 'apk' && (
-                            <div className="space-y-4">
-                              <input
-                                type="file"
-                                ref={fileInputRef}
-                                accept=".apk"
-                                className="hidden"
-                                onChange={(e) => {
-                                  if (e.target.files && e.target.files[0]) {
-                                    setApkFile(e.target.files[0]);
-                                    setError(null);
+                    ) : (
+                      <>
+                        {/* APK MODE */}
+                        {scanMode === 'apk' && (
+                          <div className="space-y-3.5">
+                            <input
+                              type="file"
+                              ref={fileInputRef}
+                              accept=".apk"
+                              className="hidden"
+                              onChange={(e) => {
+                                if (e.target.files && e.target.files[0]) {
+                                  const chosen = e.target.files[0];
+                                  setApkFile(chosen);
+                                  setError(null);
+                                  if (!currentUser) {
+                                    promptSignInForScan({ mode: 'apk', file: chosen });
                                   }
-                                }}
-                              />
+                                }
+                              }}
+                            />
 
-                              {apkFile ? (
-                                /* Real Client-Side APK Pre-Flight Inspector Card */
+                            {apkFile ? (
+                              <>
                                 <div
                                   onDragOver={(e) => {
                                     e.preventDefault();
@@ -1950,623 +1882,275 @@ export default function App() {
                                   }}
                                   onDragLeave={() => setIsDragging(false)}
                                   onDrop={handleFileDrop}
-                                  className={`p-4 sm:p-5 rounded-lg border transition-colors space-y-3.5 ${
+                                  className={`p-4 rounded-lg border transition-colors flex items-center justify-between gap-3 ${
                                     isDragging
                                       ? 'border-emerald-500 bg-emerald-500/10'
-                                      : 'wb-surface-muted border-emerald-500/40'
+                                      : 'wb-surface-muted border-emerald-500/35'
                                   }`}
                                 >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="flex items-center gap-3 min-w-0">
-                                      <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/35 text-emerald-400 flex items-center justify-center shrink-0">
-                                        <ShieldCheck className="w-5 h-5" />
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                                      <ShieldCheck className="w-4 h-4" />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-sm font-semibold text-white truncate">
+                                          {apkFile.name}
+                                        </span>
+                                        <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                                          {(apkFile.size / 1024 / 1024).toFixed(2)} MB
+                                        </span>
                                       </div>
-                                      <div className="min-w-0">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                          <h3 className="text-sm font-semibold text-white truncate">
-                                            {apkFile.name}
-                                          </h3>
-                                          <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/10 text-slate-300 shrink-0">
-                                            {(apkFile.size / 1024 / 1024).toFixed(2)} MB
-                                          </span>
+                                      {(apkHashing || apkPreFlightHash) && (
+                                        <div className="font-mono text-[10px] text-slate-500 truncate mt-0.5 select-all">
+                                          {apkHashing
+                                            ? 'SHA-256…'
+                                            : `SHA-256: ${apkPreFlightHash?.slice(0, 16)}…${apkPreFlightHash?.slice(-8)}`}
                                         </div>
-                                        <p className="text-[11px] text-slate-400 mt-0.5">
-                                          Staged in memory · Ready for binary decompilation
-                                        </p>
-                                      </div>
-                                    </div>
-
-                                    <div className="flex items-center gap-1 shrink-0">
-                                      <button
-                                        type="button"
-                                        onClick={() => fileInputRef.current?.click()}
-                                        className="px-2 py-1 rounded text-[11px] font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
-                                      >
-                                        Change
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setApkFile(null);
-                                          setError(null);
-                                          if (fileInputRef.current) fileInputRef.current.value = '';
-                                        }}
-                                        aria-label="Remove APK file"
-                                        title="Remove file"
-                                        className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                                      >
-                                        <X className="w-4 h-4" />
-                                      </button>
+                                      )}
                                     </div>
                                   </div>
 
-                                  {/* Live Browser-Computed SHA-256 Fingerprint */}
-                                  <div className="px-3 py-2 rounded-md bg-white/[0.03] border border-white/10 flex items-center justify-between gap-2 font-mono text-[11px]">
-                                    <span className="text-slate-500 shrink-0 uppercase text-[10px]">SHA-256</span>
-                                    <span className="text-slate-300 truncate select-all">
-                                      {apkHashing
-                                        ? 'Computing local cryptographic digest...'
-                                        : apkPreFlightHash
-                                        ? `${apkPreFlightHash.slice(0, 18)}…${apkPreFlightHash.slice(-14)}`
-                                        : 'Verified on upload'}
-                                    </span>
-                                  </div>
-
-                                  {/* 4-Stage Pipeline Readiness Chips */}
-                                  <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px]">
-                                    {['Manifest XML', 'Dalvik DEX', 'Native ELF', 'Secrets'].map((stage) => (
-                                      <span
-                                        key={stage}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/25 text-emerald-400"
-                                      >
-                                        <Check className="w-2.5 h-2.5" />
-                                        <span>{stage}</span>
-                                      </span>
-                                    ))}
-                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setApkFile(null);
+                                      setError(null);
+                                      if (fileInputRef.current) fileInputRef.current.value = '';
+                                    }}
+                                    aria-label="Remove APK file"
+                                    title="Remove"
+                                    className="p-1.5 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer shrink-0"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
                                 </div>
-                              ) : (
-                                /* Optical Viewfinder Reticle Dropzone */
-                                <div
-                                  onDragOver={(e) => {
-                                    e.preventDefault();
-                                    setIsDragging(true);
-                                  }}
-                                  onDragLeave={() => setIsDragging(false)}
-                                  onDrop={handleFileDrop}
-                                  onClick={() => fileInputRef.current?.click()}
-                                  className={`group relative p-7 sm:p-8 rounded-lg transition-colors cursor-pointer flex flex-col items-center justify-center gap-3.5 text-center wb-reticle-zone ${
-                                    isDragging ? 'wb-reticle-dragging border-emerald-500/70' : 'hover:border-emerald-500/40'
-                                  }`}
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleScanApk()}
+                                  className="wb-primary-btn w-full h-10 px-4 rounded-md font-semibold text-[13px] flex items-center justify-center gap-2 transition-colors cursor-pointer"
                                 >
-                                  {/* 4 Optical Viewfinder Corner Brackets */}
-                                  <span className="wb-reticle-corner top-2.5 left-2.5 border-t-2 border-l-2 rounded-tl-[2px]" aria-hidden="true" />
-                                  <span className="wb-reticle-corner top-2.5 right-2.5 border-t-2 border-r-2 rounded-tr-[2px]" aria-hidden="true" />
-                                  <span className="wb-reticle-corner bottom-2.5 left-2.5 border-b-2 border-l-2 rounded-bl-[2px]" aria-hidden="true" />
-                                  <span className="wb-reticle-corner bottom-2.5 right-2.5 border-b-2 border-r-2 rounded-br-[2px]" aria-hidden="true" />
-
-                                  <div className="w-11 h-11 rounded-lg border bg-white/[0.04] border-white/10 group-hover:border-emerald-500/40 text-slate-300 group-hover:text-emerald-400 flex items-center justify-center transition-colors">
-                                    <UploadCloud className="w-5 h-5" />
-                                  </div>
-
-                                  <div className="space-y-1">
-                                    <h3 className="text-sm font-semibold text-white">
-                                      Drop your Android .apk file here
-                                    </h3>
-                                    <p className="text-xs text-slate-400">
-                                      Drag &amp; drop binary package or select from disk · Max {activePlanPolicy.maxApkMb}MB
-                                    </p>
-                                  </div>
-
-                                  <span className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-md text-xs font-medium wb-surface border border-white/15 text-white group-hover:border-emerald-500/45 transition-colors">
-                                    <span>Select .apk File</span>
-                                  </span>
-                                </div>
-                              )}
-
-                              <button
-                                type="button"
-                                disabled={!apkFile}
-                                onClick={() => handleScanApk()}
-                                className={`w-full h-10 px-4 rounded-md font-semibold text-[13px] flex items-center justify-between gap-2 transition-colors ${
-                                  apkFile
-                                    ? 'wb-primary-btn cursor-pointer'
-                                    : 'wb-btn-standby cursor-not-allowed'
+                                  {currentUser ? (
+                                    <>
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
+                                      <span>Run Audit</span>
+                                      <ArrowRight className="w-3.5 h-3.5" />
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Lock className="w-3.5 h-3.5" />
+                                      <span>Sign in to Run Audit</span>
+                                      <ArrowRight className="w-3.5 h-3.5" />
+                                    </>
+                                  )}
+                                </button>
+                              </>
+                            ) : (
+                              <div
+                                onDragOver={(e) => {
+                                  e.preventDefault();
+                                  setIsDragging(true);
+                                }}
+                                onDragLeave={() => setIsDragging(false)}
+                                onDrop={handleFileDrop}
+                                onClick={() => fileInputRef.current?.click()}
+                                className={`group relative py-14 sm:py-16 px-6 rounded-xl transition-all cursor-pointer flex flex-col items-center justify-center gap-5 text-center wb-reticle-zone ${
+                                  isDragging ? 'wb-reticle-dragging' : ''
                                 }`}
                               >
-                                <span className="inline-flex items-center gap-2">
-                                  <span
-                                    className={`w-2 h-2 rounded-full shrink-0 ${
-                                      apkFile ? 'bg-emerald-500' : 'bg-slate-600'
-                                    }`}
-                                    aria-hidden="true"
-                                  />
-                                  <span>
-                                    {apkFile ? 'Run APK Security Audit' : 'Select an .apk binary to enable audit'}
-                                  </span>
-                                </span>
-                                <span className="inline-flex items-center gap-1.5">
-                                  {apkFile && (
-                                    <kbd className="wb-keycap font-mono text-[10px] px-1.5 py-0.5 rounded hidden sm:inline">
-                                      ↵
-                                    </kbd>
-                                  )}
-                                  <ArrowRight className="w-3.5 h-3.5" />
-                                </span>
-                              </button>
+                                <span className="wb-reticle-corner top-3.5 left-3.5 border-t-2 border-l-2 rounded-tl-lg" aria-hidden="true" />
+                                <span className="wb-reticle-corner top-3.5 right-3.5 border-t-2 border-r-2 rounded-tr-lg" aria-hidden="true" />
+                                <span className="wb-reticle-corner bottom-3.5 left-3.5 border-b-2 border-l-2 rounded-bl-lg" aria-hidden="true" />
+                                <span className="wb-reticle-corner bottom-3.5 right-3.5 border-b-2 border-r-2 rounded-br-lg" aria-hidden="true" />
 
-                              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10 text-[11px] text-slate-400">
-                                <button
-                                  type="button"
-                                  onClick={handleOpenSampleDemo}
-                                  className="inline-flex items-center gap-1 text-emerald-400 hover:underline font-medium cursor-pointer"
-                                >
-                                  <span>Load sample audit report</span>
-                                  <ArrowRight className="w-3 h-3" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setShowTrustModal('privacy')}
-                                  className="inline-flex items-center gap-1.5 text-slate-400 hover:text-white cursor-pointer"
-                                >
-                                  <Lock className="w-3 h-3 text-emerald-400" />
-                                  <span>RAM-only · Zero disk storage</span>
-                                </button>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* WEB MODE */}
-                          {scanMode === 'web' && (
-                            <div className="space-y-4">
-                              <form
-                                onSubmit={(e) => {
-                                  e.preventDefault();
-                                  handleScanWeb();
-                                }}
-                                className="w-full flex flex-col sm:flex-row gap-2"
-                              >
-                                <div className="wb-surface-muted flex items-center gap-2.5 px-3 flex-1 min-w-0 rounded-md h-10 focus-within:border-emerald-500/60 transition-colors">
-                                  <Search className="w-4 h-4 text-slate-400 shrink-0" />
-                                  <input
-                                    ref={urlInputRef}
-                                    type="text"
-                                    placeholder="https://your-website.com"
-                                    value={url}
-                                    onChange={(e) => setUrl(e.target.value)}
-                                    className="w-full min-w-0 bg-transparent text-xs sm:text-[13px] font-medium text-white placeholder-slate-500 focus:outline-none"
-                                  />
-                                  {url.length > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setUrl('');
-                                        urlInputRef.current?.focus();
-                                      }}
-                                      aria-label="Clear target URL"
-                                      title="Clear URL"
-                                      className="p-1 rounded text-slate-400 hover:text-white transition-colors shrink-0 cursor-pointer"
-                                    >
-                                      <X className="w-3.5 h-3.5" />
-                                    </button>
-                                  )}
+                                <div className="wb-upload-squircle w-16 h-16 sm:w-[68px] sm:h-[68px] rounded-2xl flex items-center justify-center transition-transform duration-200 group-hover:scale-105">
+                                  <Upload className="w-7 h-7 stroke-[2.1]" />
                                 </div>
-                                <button
-                                  type="submit"
-                                  className="wb-primary-btn h-10 px-4 rounded-md font-semibold text-[13px] flex items-center justify-center gap-2 transition-colors shrink-0 cursor-pointer"
-                                >
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-                                  <span>Run Audit</span>
-                                  <kbd className="wb-keycap font-mono text-[10px] px-1.5 py-0.5 rounded hidden sm:inline">
-                                    ↵
-                                  </kbd>
-                                </button>
-                              </form>
 
-                              {/* Optional Authenticated API & JWT Audit */}
-                              <div className="space-y-2 pt-1">
-                                {activePlanPolicy.features.authenticatedWebScan ? (
+                                <div className="space-y-1.5">
+                                  <div className="font-display font-bold text-lg sm:text-[22px] tracking-[-0.025em] text-white">
+                                    Drop your Android .apk file here
+                                  </div>
+                                  <div className="text-xs sm:text-[13px] text-slate-400">
+                                    or <span className="wb-accent-ink font-semibold">browse files</span> · Max {activePlanPolicy.maxApkMb}MB ({activePlanPolicy.name})
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* WEB MODE */}
+                        {scanMode === 'web' && (
+                          <div className="space-y-3.5">
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                handleScanWeb();
+                              }}
+                              className="w-full flex flex-col sm:flex-row gap-2"
+                            >
+                              <div className="wb-surface-muted flex items-center gap-2.5 px-3 flex-1 min-w-0 rounded-md h-10 focus-within:border-emerald-500/60 transition-colors">
+                                <Search className="w-4 h-4 text-slate-400 shrink-0" />
+                                <input
+                                  ref={urlInputRef}
+                                  type="text"
+                                  placeholder="https://example.com"
+                                  value={url}
+                                  onChange={(e) => setUrl(e.target.value)}
+                                  onPaste={(e) => {
+                                    if (!currentUser) {
+                                      const pasted = e.clipboardData?.getData('text')?.trim() || '';
+                                      if (pasted) {
+                                        e.preventDefault();
+                                        setUrl(pasted);
+                                        promptSignInForScan({ mode: 'web', targetUrl: pasted });
+                                      }
+                                    }
+                                  }}
+                                  className="w-full min-w-0 bg-transparent text-xs sm:text-[13px] font-medium text-white placeholder-slate-500 focus:outline-none"
+                                />
+                                {url.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setUrl('');
+                                      urlInputRef.current?.focus();
+                                    }}
+                                    aria-label="Clear target URL"
+                                    className="p-1 rounded text-slate-400 hover:text-white transition-colors shrink-0 cursor-pointer"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                              <button
+                                type="submit"
+                                className="wb-primary-btn h-10 px-4 rounded-md font-semibold text-[13px] flex items-center justify-center gap-2 transition-colors shrink-0 cursor-pointer"
+                              >
+                                {currentUser ? (
                                   <>
-                                    <button
-                                      type="button"
-                                      onClick={() => setShowWebAuthOptions(!showWebAuthOptions)}
-                                      className="text-[11px] font-medium text-emerald-400 hover:underline inline-flex items-center gap-1.5 cursor-pointer"
-                                    >
-                                      <Lock className="w-3 h-3" />
-                                      <span>
-                                        {showWebAuthOptions
-                                          ? 'Hide Bearer JWT / Cookie inputs'
-                                          : '+ Optional: Audit with Bearer JWT or Session Cookie'}
-                                      </span>
-                                    </button>
-
-                                    {showWebAuthOptions && (
-                                      <div className="p-3.5 rounded-md wb-surface-muted space-y-2.5">
-                                        <div className="text-[11px] text-slate-400">
-                                          Credentials are forwarded strictly to the target&apos;s own origin for safe read-only checks and are never logged or stored.
-                                        </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                          <input
-                                            type="password"
-                                            autoComplete="off"
-                                            placeholder="Bearer <JWT_TOKEN> (optional)"
-                                            value={webAuthHeader}
-                                            onChange={(e) => setWebAuthHeader(e.target.value)}
-                                            className="w-full px-3 py-2 rounded-md bg-[#050811]/85 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60 font-mono"
-                                          />
-                                          <input
-                                            type="password"
-                                            autoComplete="off"
-                                            placeholder="Cookie: session=... (optional)"
-                                            value={webAuthCookie}
-                                            onChange={(e) => setWebAuthCookie(e.target.value)}
-                                            className="w-full px-3 py-2 rounded-md bg-[#050811]/85 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60 font-mono"
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
+                                    <span>Run Audit</span>
+                                    <ArrowRight className="w-3.5 h-3.5" />
                                   </>
                                 ) : (
-                                  <button
-                                    type="button"
-                                    onClick={openPricingPage}
-                                    className="text-[11px] font-medium text-slate-400 hover:text-white inline-flex items-center gap-1.5 cursor-pointer"
-                                  >
-                                    <Lock className="w-3 h-3 text-amber-400" />
-                                    <span>Authenticated Bearer JWT / Cookie Scan</span>
-                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold uppercase bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                                      Pro
-                                    </span>
-                                  </button>
+                                  <>
+                                    <Lock className="w-3.5 h-3.5" />
+                                    <span>Sign in to Audit</span>
+                                    <ArrowRight className="w-3.5 h-3.5" />
+                                  </>
                                 )}
+                              </button>
+                            </form>
 
-                                <div className="flex items-center justify-between flex-wrap gap-2">
-                                  {activePlanPolicy.features.burst15Req ? (
-                                    <button
-                                      type="button"
-                                      onClick={handleLoadDomainChallenge}
-                                      className="text-[11px] font-medium text-emerald-400 hover:underline inline-flex items-center gap-1.5 cursor-pointer"
-                                    >
-                                      <ShieldCheck className="w-3.5 h-3.5" />
-                                      <span>Verify Domain Ownership (15-Request Rate Burst)</span>
-                                    </button>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={openPricingPage}
-                                      className="text-[11px] font-medium text-slate-400 hover:text-white inline-flex items-center gap-1.5 cursor-pointer"
-                                    >
-                                      <Lock className="w-3 h-3 text-amber-400" />
-                                      <span>Verify Domain Ownership (15-Request Burst)</span>
-                                      <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold uppercase bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                                        Pro
-                                      </span>
-                                    </button>
-                                  )}
-                                  <span className="text-[10px] font-mono text-slate-500">
-                                    {activePlanPolicy.features.burst15Req
-                                      ? 'Default: 4-req safe profile'
-                                      : 'Starter: 4-req safe profile'}
-                                  </span>
-                                </div>
-
-                                {activePlanPolicy.features.burst15Req && domainChallenge && (
-                                  <div className="p-3 rounded-md wb-surface-muted text-[10px] font-mono space-y-1.5 text-slate-300">
-                                    <div className="text-emerald-400 font-semibold">
-                                      Add TXT record or HTML Meta Tag to verify &quot;{domainChallenge.host}&quot;:
-                                    </div>
-                                    <div className="p-1.5 rounded bg-black/50 break-all select-all text-slate-200">
-                                      DNS TXT: {domainChallenge.txtRecord}
-                                    </div>
-                                    <div className="p-1.5 rounded bg-black/50 break-all select-all text-emerald-400">
-                                      HTML Meta: {domainChallenge.metaTag}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Quick Test Targets */}
-                              <div className="flex items-center justify-between flex-wrap gap-2 pt-3 border-t border-white/10 text-[11px] text-slate-400">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="font-mono text-slate-500">Quick targets:</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleScanWeb('http://localhost:3000')}
-                                    className="px-2 py-0.5 rounded font-mono bg-white/[0.04] hover:bg-white/[0.09] border border-white/10 text-slate-300 transition-colors cursor-pointer"
-                                  >
-                                    localhost:3000
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleScanWeb('https://salowtech.com')}
-                                    className="px-2 py-0.5 rounded font-mono bg-white/[0.04] hover:bg-white/[0.09] border border-white/10 text-slate-300 transition-colors cursor-pointer"
-                                  >
-                                    salowtech.com
-                                  </button>
-                                </div>
+                            {/* Compact Optional Auth & Domain Verification Controls */}
+                            <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                              {activePlanPolicy.features.authenticatedWebScan ? (
                                 <button
                                   type="button"
-                                  onClick={handleOpenSampleDemo}
-                                  className="inline-flex items-center gap-1 text-emerald-400 hover:underline font-medium cursor-pointer"
+                                  onClick={() => setShowWebAuthOptions(!showWebAuthOptions)}
+                                  className="text-slate-400 hover:text-white inline-flex items-center gap-1.5 cursor-pointer"
                                 >
-                                  <span>Sample report</span>
-                                  <ArrowRight className="w-3 h-3" />
+                                  <Lock className="w-3 h-3 text-emerald-400" />
+                                  <span>{showWebAuthOptions ? 'Hide Auth' : 'Auth Headers'}</span>
                                 </button>
-                              </div>
-                            </div>
-                          )}
-
-                          {error && (
-                            <div className="p-3.5 rounded-md bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-medium flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left">
-                              <div className="flex items-start gap-2.5 min-w-0">
-                                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
-                                <span className="leading-relaxed">{error}</span>
-                              </div>
-                              {/upgrade|pro security|limit|quota/i.test(error) && (
+                              ) : (
                                 <button
                                   type="button"
                                   onClick={openPricingPage}
-                                  className="wb-emerald-btn h-8 px-3 rounded-md text-[11px] font-semibold inline-flex items-center gap-1 shrink-0 self-start sm:self-center cursor-pointer"
+                                  className="text-slate-500 hover:text-white inline-flex items-center gap-1 cursor-pointer"
                                 >
-                                  <span>Upgrade Plan</span>
-                                  <ArrowRight className="w-3 h-3" />
+                                  <Lock className="w-3 h-3 text-amber-400" />
+                                  <span>Auth Headers (Pro)</span>
+                                </button>
+                              )}
+
+                              <span className="text-slate-700" aria-hidden="true">·</span>
+
+                              {activePlanPolicy.features.burst15Req ? (
+                                <button
+                                  type="button"
+                                  onClick={handleLoadDomainChallenge}
+                                  className="text-slate-400 hover:text-white inline-flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                                  <span>Verify Domain</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={openPricingPage}
+                                  className="text-slate-500 hover:text-white inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Lock className="w-3 h-3 text-amber-400" />
+                                  <span>15-Req Burst (Pro)</span>
                                 </button>
                               )}
                             </div>
-                          )}
-                            </>
-                          )}
-                        </div>
 
-                        {/* Right Pane (40%): Live Armed Pipeline & Guardrail Telemetry Sidebar */}
-                        <aside className="lg:col-span-5 wb-surface-muted border-0 p-5 sm:p-6 flex flex-col justify-between gap-5">
-                          <div className="space-y-4">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500 font-semibold">
-                                Armed Pipeline · {scanMode === 'apk' ? 'APK Binary' : 'Web & API'}
-                              </span>
-                              <span
-                                className={`font-mono text-[10px] px-1.5 py-0.5 rounded border ${
-                                  loading || targetArmed
-                                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                                    : 'bg-white/[0.04] border-white/10 text-slate-400'
-                                }`}
-                              >
-                                {loading ? 'Scanning...' : targetArmed ? 'Armed' : '4 Stages'}
-                              </span>
-                            </div>
-
-                            <ol className="space-y-3">
-                              {armedStages.map((stage) => (
-                                <li
-                                  key={stage.step}
-                                  className="flex items-start gap-3 text-xs"
-                                >
-                                  <span
-                                    className={`font-mono text-[10px] px-1.5 py-0.5 rounded border shrink-0 mt-0.5 transition-colors ${
-                                      targetArmed
-                                        ? 'bg-emerald-500/10 border-emerald-500/35 text-emerald-400'
-                                        : 'bg-white/[0.03] border-white/10 text-slate-500'
-                                    }`}
-                                  >
-                                    {stage.step}
-                                  </span>
-                                  <div className="min-w-0">
-                                    <div className="font-semibold text-white leading-snug">
-                                      {stage.name}
-                                    </div>
-                                    <div className="text-[11px] text-slate-400 leading-relaxed">
-                                      {stage.detail}
-                                    </div>
-                                  </div>
-                                </li>
-                              ))}
-                            </ol>
-                          </div>
-
-                          <div className="border-t border-white/10 pt-4 grid grid-cols-2 gap-3 font-mono text-[11px]">
-                            <div>
-                              <div className="text-[10px] text-slate-500 uppercase">Retention</div>
-                              <div className="text-slate-200 mt-0.5">0s (RAM buffer)</div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] text-slate-500 uppercase">Payload Cap</div>
-                              <div className="text-slate-200 mt-0.5">{activePlanPolicy.maxApkMb} MB</div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] text-slate-500 uppercase">Exports</div>
-                              <div className="text-slate-200 mt-0.5">JSON · MD · PDF</div>
-                            </div>
-                            <div>
-                              <div className="text-[10px] text-slate-500 uppercase">Engine</div>
-                              <div className="text-emerald-400 mt-0.5 inline-flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
-                                <span>{targetArmed ? 'Armed' : 'Ready'}</span>
+                            {activePlanPolicy.features.authenticatedWebScan && showWebAuthOptions && (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <input
+                                  type="password"
+                                  autoComplete="off"
+                                  placeholder="Bearer <JWT>"
+                                  value={webAuthHeader}
+                                  onChange={(e) => setWebAuthHeader(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-md wb-surface-muted text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60 font-mono"
+                                />
+                                <input
+                                  type="password"
+                                  autoComplete="off"
+                                  placeholder="Cookie: session=..."
+                                  value={webAuthCookie}
+                                  onChange={(e) => setWebAuthCookie(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-md wb-surface-muted text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60 font-mono"
+                                />
                               </div>
-                            </div>
-                          </div>
-                        </aside>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-            </section>
-
-            {/* ── Real Product Proof: Interactive Split Audit & Git Diff Preview ── */}
-            <section id="features" className="scroll-mt-20 space-y-5">
-              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-white/10 pb-5">
-                <div className="space-y-1.5 text-left">
-                  <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-emerald-400 font-semibold">
-                    Deterministic Output
-                  </span>
-                  <h2 className="text-2xl sm:text-[28px] font-display font-semibold tracking-[-0.03em] text-white">
-                    Exact file paths and copy-paste patches, not generic alerts.
-                  </h2>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleOpenSampleDemo}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400 hover:underline cursor-pointer self-start sm:self-auto"
-                >
-                  <span>Open full interactive sample report</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
-              {(() => {
-                const sampleFindings = [
-                  {
-                    severity: 'CRITICAL',
-                    badge: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
-                    rule: 'MASVS-STORAGE-1',
-                    title: 'Hardcoded Firebase / Stripe Secret in DEX Bytecode',
-                    location: 'classes2.dex · com/app/Config.class:41',
-                    file: 'Backend Proxy Pattern (NetworkClient.kt)',
-                    diff: [
-                      { type: 'ctx', text: '  // Never embed live API secrets inside APK bytecode' },
-                      { type: 'del', text: '- val stripeKey = "sk_live_51N9x...REDACTED"' },
-                      { type: 'del', text: '- val auth = "Bearer $stripeKey"' },
-                      { type: 'add', text: '+ val checkoutUrl = "https://api.yourapp.com/v1/billing/checkout"' },
-                      { type: 'add', text: '+ val auth = "Bearer ${sessionStore.getUserJwt()}"' },
-                    ],
-                  },
-                  {
-                    severity: 'HIGH',
-                    badge: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
-                    rule: 'MASVS-CODE-2',
-                    title: 'Production APK Built With android:debuggable="true"',
-                    location: 'AndroidManifest.xml · <application>',
-                    file: 'app/src/main/AndroidManifest.xml',
-                    diff: [
-                      { type: 'ctx', text: '  <application' },
-                      { type: 'ctx', text: '      android:name=".MainApplication"' },
-                      { type: 'del', text: '-     android:debuggable="true"' },
-                      { type: 'del', text: '-     android:allowBackup="true"' },
-                      { type: 'add', text: '+     android:debuggable="false"' },
-                      { type: 'add', text: '+     android:allowBackup="false"' },
-                      { type: 'ctx', text: '      android:usesCleartextTraffic="false">' },
-                    ],
-                  },
-                  {
-                    severity: 'MEDIUM',
-                    badge: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
-                    rule: 'OWASP-A05',
-                    title: 'Missing Strict-Transport-Security & CSP Headers',
-                    location: 'https://api.yourapp.com · HTTP Response',
-                    file: 'vercel.json / Express Security Middleware',
-                    diff: [
-                      { type: 'ctx', text: '  app.use((req, res, next) => {' },
-                      { type: 'del', text: '-   // Missing HSTS & Content-Security-Policy headers' },
-                      { type: 'add', text: '+   res.setHeader("Strict-Transport-Security", "max-age=63072000; includeSubDomains");' },
-                      { type: 'add', text: '+   res.setHeader("Content-Security-Policy", "default-src \'self\'; object-src \'none\'");' },
-                      { type: 'ctx', text: '    next();' },
-                      { type: 'ctx', text: '  });' },
-                    ],
-                  },
-                ];
-                const activeSample = sampleFindings[previewFindingIdx] || sampleFindings[0];
-
-                return (
-                  <div className="wb-bezel p-1.5 rounded-2xl">
-                  <div className="wb-surface rounded-xl overflow-hidden grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-white/10 text-left">
-                    {/* Left: Findings List */}
-                    <div className="lg:col-span-5 divide-y divide-white/[0.08]">
-                      <div className="px-4 py-3 font-mono text-[10px] uppercase tracking-wider text-slate-500 flex items-center justify-between">
-                        <span>Parsed Findings (3)</span>
-                        <span>Click row to inspect diff</span>
-                      </div>
-                      {sampleFindings.map((item, idx) => {
-                        const selected = idx === previewFindingIdx;
-                        return (
-                          <button
-                            key={item.title}
-                            type="button"
-                            onClick={() => {
-                              setPreviewFindingIdx(idx);
-                              setPreviewPatchCopied(false);
-                            }}
-                            className={`w-full text-left px-4 py-4 transition-colors cursor-pointer space-y-1.5 ${
-                              selected ? 'bg-white/[0.05]' : 'hover:bg-white/[0.03]'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className={`font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded border ${item.badge}`}>
-                                {item.severity}
-                              </span>
-                              <span className="font-mono text-[10px] text-slate-400">
-                                {item.rule}
-                              </span>
-                            </div>
-                            <div className="text-xs sm:text-[13px] font-semibold text-white">
-                              {item.title}
-                            </div>
-                            <div className="font-mono text-[11px] text-slate-400 truncate">
-                              {item.location}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Right: Unified Diff Patch Viewer */}
-                    <div className="lg:col-span-7 flex flex-col wb-surface-muted border-0">
-                      <div className="px-4 py-2.5 border-b border-white/10 flex items-center justify-between gap-2 font-mono text-[11px]">
-                        <span className="text-slate-300 truncate">{activeSample.file}</span>
-                        <div className="flex items-center gap-2.5 shrink-0">
-                          <span className="text-[10px] text-emerald-400 hidden sm:inline">Recommended Patch</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const patchText = activeSample.diff
-                                .filter((l) => l.type !== 'del')
-                                .map((l) => l.text.replace(/^[+-]\s?/, ''))
-                                .join('\n');
-                              navigator.clipboard
-                                ?.writeText(patchText)
-                                .then(() => {
-                                  setPreviewPatchCopied(true);
-                                  setTimeout(() => setPreviewPatchCopied(false), 1800);
-                                })
-                                .catch(() => {});
-                            }}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-[10px] text-slate-300 hover:text-white transition-colors cursor-pointer"
-                          >
-                            {previewPatchCopied ? (
-                              <Check className="w-3 h-3 text-emerald-400" />
-                            ) : (
-                              <Copy className="w-3 h-3" />
                             )}
-                            <span>{previewPatchCopied ? 'Copied' : 'Copy Patch'}</span>
-                          </button>
-                        </div>
-                      </div>
-                      <div className="p-4 font-mono text-[11.5px] leading-6 overflow-x-auto flex-1">
-                        {activeSample.diff.map((line, lineIdx) => (
-                          <div
-                            key={lineIdx}
-                            className={`px-2.5 py-0.5 rounded-sm whitespace-pre ${
-                              line.type === 'del'
-                                ? 'wb-diff-del'
-                                : line.type === 'add'
-                                ? 'wb-diff-add'
-                                : 'text-slate-400'
-                            }`}
-                          >
-                            {line.text}
+
+                            {activePlanPolicy.features.burst15Req && domainChallenge && (
+                              <div className="p-3 rounded-md wb-surface-muted text-[10px] font-mono space-y-1.5 text-slate-300">
+                                <div className="p-1.5 rounded bg-black/50 break-all select-all text-slate-200">
+                                  TXT: {domainChallenge.txtRecord}
+                                </div>
+                                <div className="p-1.5 rounded bg-black/50 break-all select-all text-emerald-400">
+                                  META: {domainChallenge.metaTag}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        ))}
-                      </div>
-                      <div className="px-4 py-2.5 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-400">
-                        <span>Evidence verified via static parser + rule engine</span>
-                        <span className="font-mono text-[10px] text-slate-500">Confirmed</span>
-                      </div>
-                    </div>
+                        )}
+
+                        {error && (
+                          <div className="p-3 rounded-md bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-medium flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left">
+                            <div className="flex items-start gap-2 min-w-0">
+                              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                              <span>{error}</span>
+                            </div>
+                            {/upgrade|pro security|limit|quota/i.test(error) && (
+                              <button
+                                type="button"
+                                onClick={openPricingPage}
+                                className="wb-emerald-btn h-8 px-3 rounded-md text-[11px] font-semibold inline-flex items-center gap-1 shrink-0 self-start sm:self-center cursor-pointer"
+                              >
+                                <span>Upgrade</span>
+                                <ArrowRight className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
-                  </div>
-                );
-              })()}
+                </div>
+              </div>
             </section>
+
+            {/* ── Real Product Proof: Interactive IDE Security Workbench ── */}
+            <DeterministicOutputWorkbench onOpenSampleDemo={handleOpenSampleDemo} />
 
             <HomepageSections
               currentUser={currentUser}
@@ -2579,942 +2163,40 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Executive Report Dashboard ── */}
+        {/* ── 4-Zone Tabbed Pro Executive Report Dashboard ── */}
         {!showAccountPage && !showPricingPage && report && (
-          <div className="flex flex-col gap-6 pb-10">
-            {report.isDemoPreview && (
-              <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-400/35 text-amber-200 text-xs font-bold flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-amber-300 shrink-0" />
-                  <span>
-                    SAMPLE DEMO PREVIEW — Interactive showcase showing how CheckMyAPK reports vulnerable test APKs. Upload your own `.apk` for a real audit.
-                  </span>
-                </div>
-                <button
-                  onClick={() => setReport(null)}
-                  className="px-3 py-1 rounded-lg bg-amber-400 text-slate-950 font-black text-[11px] hover:brightness-110 cursor-pointer shrink-0"
-                >
-                  Scan Real APK
-                </button>
-              </div>
-            )}
-
-            {/* Target Header Bar */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 glass-panel p-5 rounded-3xl">
-              <div className="flex items-center gap-3.5">
-                <div
-                  className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
-                    report.isApkAudit
-                      ? 'bg-purple-500/15 border border-purple-400/40 text-purple-300 cyber-glow-purple'
-                      : 'bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 cyber-glow-cyan'
-                  }`}
-                >
-                  {report.isApkAudit ? <Smartphone className="w-6 h-6" /> : <Shield className="w-6 h-6" />}
-                </div>
-                <div>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">
-                    {report.isApkAudit ? 'Android APK Audit Target' : 'Web Security Audit Target'}
-                  </span>
-                  <div className="text-base font-black text-white flex items-center gap-2 flex-wrap">
-                    <span>{report.isApkAudit ? report.apkMeta?.packageName || report.targetUrl : report.targetUrl}</span>
-                    {report.isApkAudit && report.apkMeta && (
-                      <span className="text-[11px] font-bold text-purple-200 bg-purple-500/20 border border-purple-400/30 px-2.5 py-0.5 rounded-full">
-                        {report.apkMeta.fileName} • {report.apkMeta.sizeMb} MB
-                        {report.apkMeta.versionName ? ` • v${report.apkMeta.versionName}` : ''}
-                      </span>
-                    )}
-                    {activePlanPolicy.features.scoreDelta && scoreDelta && (
-                      <span
-                        className={`text-[10px] font-black px-2 py-0.5 rounded-full border inline-flex items-center gap-1 ${
-                          scoreDelta.delta >= 0
-                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                            : 'bg-rose-500/15 text-rose-300 border-rose-400/30'
-                        }`}
-                      >
-                        <TrendingUp className="w-3 h-3" />
-                        {scoreDelta.delta > 0
-                          ? `+${scoreDelta.delta} pts vs prev (${scoreDelta.previousScore}→${report.score})`
-                          : scoreDelta.delta < 0
-                          ? `${scoreDelta.delta} pts vs prev (${scoreDelta.previousScore}→${report.score})`
-                          : `Consistent (${report.score}/100)`}
-                        {(scoreDelta.fixedIssues.length > 0 || scoreDelta.newIssues.length > 0) &&
-                          ` • ${scoreDelta.fixedIssues.length} Fixed • ${scoreDelta.newIssues.length} New`}
-                      </span>
-                    )}
-                    {!report.isApkAudit && report.domainVerification && (
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                          report.domainVerification.verified
-                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                            : 'bg-white/[0.05] text-slate-300 border-white/10'
-                        }`}
-                      >
-                        {report.domainVerification.verified
-                          ? `Verified Owner (${report.domainVerification.method})`
-                          : `Safe Mode (${report.domainVerification.burstProfile})`}
-                      </span>
-                    )}
-                  </div>
-                  {activePlanPolicy.features.scoreDelta && scoreDelta && scoreDelta.fixedIssues.length > 0 && (
-                    <div className="mt-1 text-[10px] text-emerald-300 font-semibold">
-                      Resolved since last scan: {scoreDelta.fixedIssues.slice(0, 3).join(' • ')}
-                      {scoreDelta.fixedIssues.length > 3 ? ` (+${scoreDelta.fixedIssues.length - 3} more)` : ''}
-                    </div>
-                  )}
-                  {report.isApkAudit && report.apkMeta?.sha256 && (
-                    <div className="flex items-center gap-2 flex-wrap mt-1.5 text-[10px] font-mono text-slate-400">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard.writeText(report.apkMeta!.sha256!);
-                          setHashCopied(true);
-                          setTimeout(() => setHashCopied(false), 1800);
-                        }}
-                        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-cyan-300 cursor-pointer"
-                        title="Click to copy full SHA-256 fingerprint"
-                      >
-                        <span>SHA-256: {report.apkMeta.sha256.slice(0, 16)}...</span>
-                        {hashCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                      </button>
-                      {report.apkMeta.obfuscationStatus && (
-                        <span className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/10 text-slate-300">
-                          Code: {report.apkMeta.obfuscationStatus}
-                        </span>
-                      )}
-                      {report.telemetry?.durationSeconds && (
-                        <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">
-                          {report.telemetry.durationSeconds}s
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2.5 no-print">
-                {report.telemetry?.realTimeLogs && (
-                  <button
-                    onClick={() => setShowLogsModal(true)}
-                    className="px-4 py-2 rounded-xl text-xs font-bold bg-white/[0.06] hover:bg-white/[0.12] text-cyan-300 border border-white/10 transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Terminal className="w-3.5 h-3.5" />
-                    Logs ({report.telemetry.realTimeLogs.length})
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    setReport(null);
-                    setApkFile(null);
-                  }}
-                  className="px-4 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-500/20 to-purple-500/20 hover:from-cyan-500/30 hover:to-purple-500/30 text-white border border-white/15 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  New Audit
-                </button>
-              </div>
-            </div>
-
-            {/* Technical Telemetry Row */}
-            {report.telemetry && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  {report.isApkAudit && report.apkMeta ? (
-                    <>
-                      <div className="glass-card p-4 rounded-2xl flex items-center gap-3">
-                        <Cpu className="w-5 h-5 text-purple-400 shrink-0" />
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">Framework</span>
-                          <span className="text-xs font-extrabold text-white">{report.apkMeta.frameworkDetected}</span>
-                        </div>
-                      </div>
-                      <div className="glass-card p-4 rounded-2xl flex items-center gap-3">
-                        <Smartphone className="w-5 h-5 text-cyan-400 shrink-0" />
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">SDK Level</span>
-                          <span className="text-xs font-extrabold text-white">
-                            Target {report.apkMeta.targetSdkVersion} (Min {report.apkMeta.minSdkVersion})
-                          </span>
-                        </div>
-                      </div>
-                      <div className="glass-card p-4 rounded-2xl flex items-center gap-3">
-                        <Layers className="w-5 h-5 text-amber-400 shrink-0" />
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">Bytecode</span>
-                          <span className="text-xs font-extrabold text-white">{report.apkMeta.dexCount} DEX Archives</span>
-                        </div>
-                      </div>
-                      <div className="glass-card p-4 rounded-2xl flex items-center gap-3">
-                        <FileCode2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">Permissions</span>
-                          <span className="text-xs font-extrabold text-white">{report.apkMeta.permissions.length} Declared</span>
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="glass-card p-4 rounded-2xl flex items-center gap-3">
-                        <Activity className="w-5 h-5 text-cyan-400 shrink-0" />
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">Latency</span>
-                          <span className="text-xs font-extrabold text-white">{report.telemetry.latencyMs || 0} ms</span>
-                        </div>
-                      </div>
-                      <div className="glass-card p-4 rounded-2xl flex items-center gap-3">
-                        <FileCode2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">Inspected</span>
-                          <span className="text-xs font-extrabold text-white">
-                            {report.telemetry.totalLinesInspected.toLocaleString()} lines ({(report.telemetry.totalBytesScanned / 1024).toFixed(0)} KB)
-                          </span>
-                        </div>
-                      </div>
-                      <div className="glass-card p-4 rounded-2xl flex items-center gap-3">
-                        <Layers className="w-5 h-5 text-amber-400 shrink-0" />
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">JS Bundles</span>
-                          <span className="text-xs font-extrabold text-white">{report.telemetry.scriptsCount} Chunks</span>
-                        </div>
-                      </div>
-                      <div className="glass-card p-4 rounded-2xl flex items-center gap-3">
-                        <Cpu className="w-5 h-5 text-purple-400 shrink-0" />
-                        <div>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold">Stack</span>
-                          <div className="flex gap-1 flex-wrap mt-0.5">
-                            {report.telemetry.detectedTech.map((t, idx) => (
-                              <span key={idx} className="text-[10px] font-bold bg-cyan-500/15 text-cyan-300 px-1.5 py-0.5 rounded">
-                                {t}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {/* Web Deep Surface: Multi-Route, OpenAPI, GraphQL, DOM XSS Sinks & JWT */}
-                {!report.isApkAudit && report.webDeepSurface && (
-                  <div className="glass-card p-5 rounded-2xl border border-cyan-500/25 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <Globe className="w-4 h-4 text-cyan-400" />
-                        <h3 className="text-xs font-black uppercase tracking-wider text-white">
-                          Stage 2.5: Web Attack Surface, DOM XSS Sinks &amp; API/JWT Audit
-                        </h3>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono">
-                        <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 font-bold">
-                          {report.webDeepSurface.discoveredRoutes.length} Routes • {report.webDeepSurface.apiEndpoints.length} APIs
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-full font-black border ${
-                            report.webDeepSurface.domSinks.length > 0
-                              ? 'bg-rose-500/15 text-rose-300 border-rose-400/30'
-                              : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                          }`}
-                        >
-                          {report.webDeepSurface.domSinks.length} DOM Sink(s)
-                        </span>
-                        {report.webDeepSurface.graphqlEndpoints.length > 0 && (
-                          <span
-                            className={`px-2 py-0.5 rounded-full font-bold border ${
-                              report.webDeepSurface.graphqlEndpoints.some((g) => g.introspectionEnabled)
-                                ? 'bg-amber-500/15 text-amber-300 border-amber-400/30'
-                                : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                            }`}
-                          >
-                            GraphQL:{' '}
-                            {report.webDeepSurface.graphqlEndpoints.some((g) => g.introspectionEnabled)
-                              ? 'Introspection Open'
-                              : 'Protected'}
-                          </span>
-                        )}
-                        {report.webDeepSurface.jwtAudits.length > 0 && (
-                          <span className="px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-400/30 font-bold">
-                            JWT Audited: {report.webDeepSurface.jwtAudits.length}
-                          </span>
-                        )}
-                        {report.webDeepSurface.authAudit?.enabled && (
-                          <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/30 font-bold">
-                            Auth: {report.webDeepSurface.authAudit.authKind} (HTTP {report.webDeepSurface.authAudit.targetStatus})
-                          </span>
-                        )}
-                        {report.networkPosture && (
-                          <>
-                            <span
-                              className={`px-2 py-0.5 rounded-full font-bold border ${
-                                report.networkPosture.corsReflection === 'Strict'
-                                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                                  : 'bg-rose-500/15 text-rose-300 border-rose-400/30'
-                              }`}
-                            >
-                              CORS Probe: {report.networkPosture.corsReflection}
-                            </span>
-                            {report.networkPosture.tlsProtocol && (
-                              <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 font-bold">
-                                {report.networkPosture.tlsProtocol}
-                                {report.networkPosture.certDaysRemaining !== null
-                                  ? ` (${report.networkPosture.certDaysRemaining}d cert)`
-                                  : ''}
-                              </span>
-                            )}
-                            {report.networkPosture.spfPresent !== null && (
-                              <span
-                                className={`px-2 py-0.5 rounded-full font-bold border ${
-                                  report.networkPosture.spfPresent &&
-                                  (report.networkPosture.dmarcPolicy === 'reject' ||
-                                    report.networkPosture.dmarcPolicy === 'quarantine')
-                                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                                    : 'bg-amber-500/15 text-amber-300 border-amber-400/30'
-                                }`}
-                              >
-                                SPF:{report.networkPosture.spfPresent ? 'Yes' : 'No'} • DMARC:{report.networkPosture.dmarcPolicy || 'none'}
-                              </span>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-[11px] font-mono">
-                      {/* Routes & OpenAPI */}
-                      <div className="p-3 rounded-xl bg-[#050811]/80 border border-white/5 space-y-1.5">
-                        <div className="text-[10px] font-black uppercase text-cyan-300">
-                          Routes, Sitemap &amp; OpenAPI ({report.webDeepSurface.openApiSpecs.length} Spec)
-                        </div>
-                        <div className="max-h-28 overflow-y-auto space-y-1 pr-1 text-slate-300">
-                          {report.webDeepSurface.openApiSpecs.map((sp, i) => (
-                            <div key={i} className="text-amber-300 truncate" title={sp.url}>
-                              OpenAPI: {sp.url.replace(/^https?:\/\/[^/]+/, '')} ({sp.pathsCount} paths)
-                            </div>
-                          ))}
-                          {report.webDeepSurface.apiEndpoints.slice(0, 6).map((ep, i) => (
-                            <div key={`ep-${i}`} className="text-emerald-300 truncate" title={ep}>
-                              API: {ep}
-                            </div>
-                          ))}
-                          {report.webDeepSurface.discoveredRoutes.slice(0, 5).map((rt, i) => (
-                            <div key={`rt-${i}`} className="text-slate-400 truncate" title={rt}>
-                              Route: {rt}
-                            </div>
-                          ))}
-                          {report.webDeepSurface.apiEndpoints.length === 0 &&
-                            report.webDeepSurface.discoveredRoutes.length === 0 &&
-                            report.webDeepSurface.openApiSpecs.length === 0 && (
-                              <div className="text-slate-500">No extra routes or OpenAPI docs exposed.</div>
-                            )}
-                        </div>
-                      </div>
-
-                      {/* Static DOM XSS Sinks */}
-                      <div className="p-3 rounded-xl bg-[#050811]/80 border border-white/5 space-y-1.5">
-                        <div className="text-[10px] font-black uppercase text-rose-300">
-                          Static DOM XSS Sinks ({report.webDeepSurface.domSinks.length})
-                        </div>
-                        <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1">
-                          {report.webDeepSurface.domSinks.length > 0 ? (
-                            report.webDeepSurface.domSinks.slice(0, 6).map((sink, i) => (
-                              <div key={i} className="p-1.5 rounded bg-rose-500/10 border border-rose-500/20">
-                                <div className="flex items-center justify-between gap-1 text-[10px]">
-                                  <span className="font-bold text-rose-300">{sink.type}</span>
-                                  {sink.taintedByInput && (
-                                    <span className="px-1 rounded bg-rose-500/30 text-white text-[9px]">INPUT TAINT</span>
-                                  )}
-                                </div>
-                                <div className="text-slate-300 text-[10px] truncate" title={sink.snippet}>
-                                  {sink.snippet}
-                                </div>
-                              </div>
-                            ))
-                          ) : (
-                            <div className="text-emerald-300">0 unsafe eval / innerHTML / postMessage sinks matched.</div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* JWT & Auth Control Checks */}
-                      <div className="p-3 rounded-xl bg-[#050811]/80 border border-white/5 space-y-1.5">
-                        <div className="text-[10px] font-black uppercase text-purple-300">
-                          JWT &amp; Auth Session Audit ({report.webDeepSurface.jwtAudits.length})
-                        </div>
-                        <div className="max-h-28 overflow-y-auto space-y-1.5 pr-1">
-                          {report.webDeepSurface.jwtAudits.map((jt, i) => (
-                            <div key={i} className="p-1.5 rounded bg-purple-500/10 border border-purple-500/20 space-y-0.5">
-                              <div className="flex items-center justify-between text-[10px]">
-                                <span className="text-purple-200 font-bold">alg: {jt.alg}</span>
-                                <span className={jt.hasExp ? 'text-emerald-300' : 'text-amber-300'}>
-                                  {jt.hasExp ? (jt.expired ? 'Expired exp' : 'Valid exp') : 'No exp'}
-                                </span>
-                              </div>
-                              <div className="text-[10px] text-slate-400 truncate">
-                                Claims: {jt.claims.join(', ')}
-                              </div>
-                              {jt.issues.length > 0 && (
-                                <div className="text-[10px] text-rose-300 truncate">{jt.issues.join(' • ')}</div>
-                              )}
-                            </div>
-                          ))}
-                          {report.webDeepSurface.authAudit?.protectedApiChecks.slice(0, 4).map((chk, i) => (
-                            <div key={`chk-${i}`} className="text-[10px] text-slate-300 flex justify-between gap-2">
-                              <span className="truncate">{chk.url}</span>
-                              <span className="shrink-0 text-cyan-300">
-                                {chk.authStatus} vs {chk.unauthStatus}
-                              </span>
-                            </div>
-                          ))}
-                          {report.webDeepSurface.jwtAudits.length === 0 &&
-                            (!report.webDeepSurface.authAudit ||
-                              report.webDeepSurface.authAudit.protectedApiChecks.length === 0) && (
-                              <div className="text-slate-500">
-                                No client JWTs found. Attach an optional Bearer JWT above to audit session claims &amp; protected routes.
-                              </div>
-                            )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Ostorlab-Level APK Intelligence Bento Modules */}
-                {report.isApkAudit && report.apkMeta && (
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                    {/* 1. Exported Components Surface */}
-                    {report.apkMeta.exportedComponents && (
-                      <div className="glass-card p-5 rounded-2xl border border-white/10 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <Shield className="w-4 h-4 text-cyan-400" />
-                            <h3 className="text-xs font-black uppercase tracking-wider text-white">
-                              Exported IPC Surface
-                            </h3>
-                          </div>
-                          <span
-                            className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
-                              report.apkMeta.exportedComponents.unprotectedCount > 0
-                                ? 'bg-amber-500/15 text-amber-300 border-amber-400/30'
-                                : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                            }`}
-                          >
-                            {report.apkMeta.exportedComponents.unprotectedCount > 0
-                              ? `${report.apkMeta.exportedComponents.unprotectedCount} Unprotected`
-                              : `${report.apkMeta.exportedComponents.totalExported} Audited`}
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-4 gap-1.5 text-center">
-                          {[
-                            { label: 'Activities', count: report.apkMeta.exportedComponents.activities.length },
-                            { label: 'Services', count: report.apkMeta.exportedComponents.services.length },
-                            { label: 'Receivers', count: report.apkMeta.exportedComponents.receivers.length },
-                            { label: 'Providers', count: report.apkMeta.exportedComponents.providers.length }
-                          ].map((box, idx) => (
-                            <div key={idx} className="p-2 rounded-xl bg-[#050811]/80 border border-white/5">
-                              <span className="text-sm font-black text-white block">{box.count}</span>
-                              <span className="text-[9px] font-bold uppercase text-slate-400">{box.label}</span>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="space-y-1.5 max-h-28 overflow-y-auto pr-1 text-[11px] font-mono">
-                          {[
-                            ...report.apkMeta.exportedComponents.activities,
-                            ...report.apkMeta.exportedComponents.services,
-                            ...report.apkMeta.exportedComponents.receivers,
-                            ...report.apkMeta.exportedComponents.providers
-                          ].slice(0, 8).map((c, idx) => (
-                            <div
-                              key={idx}
-                              className="flex items-center justify-between gap-2 px-2.5 py-1 rounded-lg bg-[#050811]/70 border border-white/5"
-                            >
-                              <span className="truncate text-slate-300" title={c.name}>
-                                <span className="text-cyan-400">[{c.componentType[0].toUpperCase()}]</span>{' '}
-                                {c.name.split('.').slice(-2).join('.')}
-                              </span>
-                              <span
-                                className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
-                                  c.risky
-                                    ? 'bg-rose-500/20 text-rose-300'
-                                    : c.isLauncher
-                                    ? 'bg-cyan-500/20 text-cyan-300'
-                                    : 'bg-emerald-500/15 text-emerald-300'
-                                }`}
-                              >
-                                {c.risky ? 'UNPROTECTED' : c.isLauncher ? 'LAUNCHER' : 'GUARDED'}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* 2. Trackers & 3rd-Party SDKs */}
-                    <div className="glass-card p-5 rounded-2xl border border-white/10 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Radio className="w-4 h-4 text-purple-400" />
-                          <h3 className="text-xs font-black uppercase tracking-wider text-white">
-                            Trackers & Embedded SDKs
-                          </h3>
-                        </div>
-                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-400/30">
-                          {(report.apkMeta.trackers?.length || 0) + (report.apkMeta.sdks?.length || 0)} Detected
-                        </span>
-                      </div>
-
-                      <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-                        <div>
-                          <span className="text-[10px] font-bold uppercase text-amber-300 block mb-1">
-                            Analytics & Ad Trackers ({report.apkMeta.trackers?.length || 0})
-                          </span>
-                          <div className="flex flex-wrap gap-1.5">
-                            {report.apkMeta.trackers && report.apkMeta.trackers.length > 0 ? (
-                              report.apkMeta.trackers.map((t, idx) => (
-                                <span
-                                  key={idx}
-                                  className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-200 border border-amber-400/25"
-                                >
-                                  {t}
-                                </span>
-                              ))
-                            ) : (
-                              <span className="text-[11px] text-slate-500">No ad/analytics trackers detected</span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div>
-                          <span className="text-[10px] font-bold uppercase text-cyan-300 block mb-1">
-                            Core & Payment SDKs ({report.apkMeta.sdks?.length || 0})
-                          </span>
-                          <div className="flex flex-wrap gap-1.5">
-                            {report.apkMeta.sdks && report.apkMeta.sdks.length > 0 ? (
-                              report.apkMeta.sdks.map((s, idx) => (
-                                <span
-                                  key={idx}
-                                  className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-200 border border-cyan-400/25"
-                                >
-                                  {s}
-                                </span>
-                              ))
-                            ) : (
-                              <span className="text-[11px] text-slate-500">Zero external SDK footprints found</span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 3. Stage 3 Extracted Backend APIs */}
-                    <div className="glass-card p-5 rounded-2xl border border-white/10 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Server className="w-4 h-4 text-emerald-400" />
-                          <h3 className="text-xs font-black uppercase tracking-wider text-white">
-                            Stage 3: Backend APIs
-                          </h3>
-                        </div>
-                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/30">
-                          {report.apkMeta.probedApis?.length || 0} Live Probed
-                        </span>
-                      </div>
-
-                      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 text-[11px] font-mono">
-                        {report.apkMeta.probedApis && report.apkMeta.probedApis.length > 0 ? (
-                          report.apkMeta.probedApis.map((api, idx) => (
-                            <div
-                              key={idx}
-                              className="p-2 rounded-xl bg-[#050811]/80 border border-white/5 space-y-1"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="truncate text-cyan-300 font-semibold" title={api.url}>
-                                  {api.url.replace(/^https?:\/\//, '')}
-                                </span>
-                                <span
-                                  className={`text-[9px] font-black px-1.5 py-0.5 rounded shrink-0 ${
-                                    api.reachable
-                                      ? 'bg-emerald-500/20 text-emerald-300'
-                                      : 'bg-slate-500/20 text-slate-300'
-                                  }`}
-                                >
-                                  {api.reachable ? `HTTP ${api.status} • ${api.latencyMs}ms` : String(api.status)}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2 text-[9px] text-slate-400">
-                                <span>HSTS: {api.hsts ? 'Yes' : 'No'}</span>
-                                <span>•</span>
-                                <span className="truncate">CORS: {api.cors}</span>
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <div className="p-3 rounded-xl bg-[#050811]/60 border border-white/5 text-slate-400 text-[11px]">
-                            No custom external API origins were hardcoded in DEX/JS bundles.
-                          </div>
-                        )}
-                        {report.apkMeta.baasUrls && report.apkMeta.baasUrls.length > 0 && (
-                          <div className="pt-1 flex flex-wrap gap-1">
-                            {report.apkMeta.baasUrls.map((b, idx) => (
-                              <span key={idx} className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 truncate max-w-full">
-                                BaaS: {b.replace('https://', '')}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* 4. Stage 2.5: Dalvik Bytecode Control-Flow, Cross-Method Taint & Native ELF Inspection */}
-                {report.isApkAudit && report.apkMeta?.dexBytecodeGraph && (
-                  <div className="glass-card p-5 rounded-2xl border border-purple-500/25 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <Binary className="w-4 h-4 text-purple-400" />
-                        <h3 className="text-xs font-black uppercase tracking-wider text-white">
-                          Stage 2.5: Dalvik Bytecode CFG &amp; Cross-Method Taint Graph
-                        </h3>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono">
-                        <span className="px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-400/30 font-bold">
-                          {report.apkMeta.dexBytecodeGraph.methodsAnalyzed.toLocaleString()} Methods • {report.apkMeta.dexBytecodeGraph.instructionsScanned.toLocaleString()} Opcodes ({report.apkMeta.dexBytecodeGraph.durationMs}ms)
-                        </span>
-                        {report.apkMeta.pinningStatus && (
-                          <span
-                            className={`px-2 py-0.5 rounded-full font-bold border ${
-                              report.apkMeta.pinningStatus.active
-                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                                : 'bg-amber-500/15 text-amber-300 border-amber-400/30'
-                            }`}
-                          >
-                            {report.apkMeta.pinningStatus.active ? 'SSL Pinning: Active' : 'SSL Pinning: Not Detected'}
-                          </span>
-                        )}
-                        <span
-                          className={`px-2 py-0.5 rounded-full font-black border ${
-                            report.apkMeta.dexBytecodeGraph.taintPaths.length > 0
-                              ? 'bg-rose-500/15 text-rose-300 border-rose-400/30'
-                              : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                          }`}
-                        >
-                          {report.apkMeta.dexBytecodeGraph.taintPaths.length > 0
-                            ? `${report.apkMeta.dexBytecodeGraph.taintPaths.length} Taint Flow(s)${
-                                (report.apkMeta.dexBytecodeGraph.interproceduralPathsCount || 0) > 0
-                                  ? ` (${report.apkMeta.dexBytecodeGraph.interproceduralPathsCount} Multi-Hop)`
-                                  : ''
-                              }`
-                            : '0 Taint Leaks'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {report.apkMeta.dexBytecodeGraph.taintPaths.length > 0 && (
-                      <div className="space-y-1.5">
-                        {report.apkMeta.dexBytecodeGraph.taintPaths.slice(0, 6).map((tp, idx) => (
-                          <div key={idx} className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/25 text-[11px] font-mono">
-                            <div className="flex items-center justify-between gap-2 text-rose-300 font-bold">
-                              <span>
-                                {tp.source} ➔ {tp.sink}
-                                {tp.hopCount && tp.hopCount >= 2 ? ` (${tp.hopCount}-Hop Chain)` : ''}
-                              </span>
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/20">{tp.owaspRef}</span>
-                            </div>
-                            <div className="text-slate-300 mt-1 break-all">
-                              {tp.callChain && tp.callChain.length >= 2 ? tp.callChain.join(' ➔ ') : tp.methodSignature}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {report.apkMeta.dexBytecodeGraph.callGraphHotspots.length > 0 && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 pt-1 max-h-36 overflow-y-auto pr-1">
-                        {report.apkMeta.dexBytecodeGraph.callGraphHotspots.slice(0, 9).map((edge, idx) => (
-                          <div key={idx} className="p-2 rounded-xl bg-[#050811]/80 border border-white/5 text-[10px] font-mono space-y-0.5">
-                            <span className="text-[9px] font-black uppercase text-cyan-300">{edge.category}</span>
-                            <div className="text-slate-300 truncate" title={edge.callerMethod}>{edge.callerMethod}</div>
-                            <div className="text-purple-300 truncate" title={edge.calleeSignature}>↳ {edge.calleeSignature}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {report.apkMeta.nativeElfSummary && report.apkMeta.nativeElfSummary.uniqueLibrariesCount > 0 && (
-                      <div className="pt-2 border-t border-white/10 space-y-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-[11px] font-black uppercase tracking-wider text-cyan-300">
-                            Native ELF (.so) Binary Matrix ({report.apkMeta.nativeElfSummary.uniqueLibrariesCount} Unique • {report.apkMeta.nativeElfSummary.appLibrariesCount} App Libs • {report.apkMeta.nativeElfSummary.nativeStringsScannedKb} KB Strings)
-                          </span>
-                          <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                              report.apkMeta.nativeElfSummary.hardeningWeakCount > 0
-                                ? 'bg-amber-500/15 text-amber-300 border-amber-400/30'
-                                : 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
-                            }`}
-                          >
-                            {report.apkMeta.nativeElfSummary.hardeningWeakCount > 0
-                              ? `${report.apkMeta.nativeElfSummary.hardeningWeakCount} Weak Binary Flag(s)`
-                              : 'PIE / NX / RELRO Hardened'}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-32 overflow-y-auto pr-1 text-[10px] font-mono">
-                          {report.apkMeta.nativeElfSummary.libraries.slice(0, 9).map((lib, idx) => (
-                            <div key={idx} className="p-2 rounded-xl bg-[#050811]/80 border border-white/5 flex flex-col gap-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="truncate font-bold text-slate-200" title={lib.fileName}>{lib.baseName}</span>
-                                <span className="text-[9px] text-slate-400 shrink-0">{lib.archBits}b {lib.abi}</span>
-                              </div>
-                              <div className="flex flex-wrap gap-1 text-[9px]">
-                                <span className={`px-1.5 rounded ${lib.pie ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>PIE</span>
-                                <span className={`px-1.5 rounded ${lib.nx ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>NX</span>
-                                <span className={`px-1.5 rounded ${lib.stackCanary ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>Canary</span>
-                                <span className={`px-1.5 rounded ${lib.relro !== 'NONE' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>RELRO:{lib.relro}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    <div className="mt-2 flex items-center justify-between flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={handleLoadDomainChallenge}
-                        className="text-[11px] font-bold text-emerald-300 hover:text-emerald-200 inline-flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                        <span>Verify Domain Ownership (Unlock Full 15-Request Rate Burst)</span>
-                      </button>
-                      <span className="text-[10px] text-slate-500">
-                        Unverified public targets use a safe 4-request gentle profile
-                      </span>
-                    </div>
-
-                    {domainChallenge && (
-                      <div className="mt-2 p-3 rounded-2xl bg-[#050811]/90 border border-emerald-500/25 text-[10px] font-mono space-y-1.5 text-slate-300">
-                        <div className="text-emerald-300 font-bold">
-                          Add either TXT record or HTML Meta Tag to verify &quot;{domainChallenge.host}&quot;:
-                        </div>
-                        <div className="p-1.5 rounded bg-black/60 break-all select-all text-cyan-300">
-                          DNS TXT: {domainChallenge.txtRecord}
-                        </div>
-                        <div className="p-1.5 rounded bg-black/60 break-all select-all text-emerald-300">
-                          HTML Meta: {domainChallenge.metaTag}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Scorecard Overview Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <ScoreGauge score={report.score} grade={report.grade} riskLevel={report.riskLevel} />
-
-              <div className="md:col-span-2 grid grid-cols-2 sm:grid-cols-5 gap-3 glass-panel p-5 rounded-3xl">
-                <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-center flex flex-col items-center justify-center">
-                  <span className="text-3xl font-black text-rose-400">{report.summaryCounts.critical}</span>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-rose-300 mt-1">Critical</span>
-                </div>
-                <div className="p-3 rounded-2xl bg-orange-500/10 border border-orange-500/25 text-center flex flex-col items-center justify-center">
-                  <span className="text-3xl font-black text-orange-400">{report.summaryCounts.high}</span>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-orange-300 mt-1">High Risk</span>
-                </div>
-                <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-center flex flex-col items-center justify-center">
-                  <span className="text-3xl font-black text-amber-400">{report.summaryCounts.medium}</span>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300 mt-1">Medium</span>
-                </div>
-                <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/25 text-center flex flex-col items-center justify-center">
-                  <span className="text-3xl font-black text-blue-400">{report.summaryCounts.low}</span>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300 mt-1">Low Risk</span>
-                </div>
-                <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 text-center flex flex-col items-center justify-center">
-                  <span className="text-3xl font-black text-emerald-400">{report.summaryCounts.pass}</span>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 mt-1">Passed</span>
-                </div>
-
-                {report.aiExecutiveSummary && (
-                  <div className="col-span-2 sm:col-span-5 mt-2 p-4 rounded-2xl bg-[#050811]/90 border border-cyan-500/25 text-xs shadow-inner">
-                    <div className="flex items-center gap-1.5 text-cyan-400 font-black mb-2">
-                      <Sparkles className="w-4 h-4" />
-                      <span>
-                        {report.isApkAudit
-                          ? 'CheckMyAPK Neural Mobile Penetration Brief:'
-                          : 'CheckMyAPK Neural Web Security Synthesis:'}
-                      </span>
-                    </div>
-                    <div className="text-slate-300 whitespace-pre-line leading-relaxed text-[12px] font-medium">
-                      {report.aiExecutiveSummary}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* 🛠️ Master Remediation Playbook (Web Only — only when Header/CORS gaps exist) */}
-            {!report.isApkAudit &&
-              report.findings.some(
-                (f) =>
-                  f.severity !== 'PASS' &&
-                  f.severity !== 'INFO' &&
-                  /header|cors/i.test(f.category || '')
-              ) && (
-              <div className="glass-panel border-emerald-500/30 rounded-3xl p-5 space-y-4 shadow-xl">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
-                      <Wrench className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-black text-white flex items-center gap-2 flex-wrap">
-                        <span>60-Second Master Fix: Resolve All Headers in 1 File</span>
-                        <span className="text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/25 px-2 py-0.5 rounded-full">
-                          {activePlanPolicy.features.aiFixDoctor ? 'Recommended' : 'Pro Security'}
-                        </span>
-                      </h3>
-                      <p className="text-xs text-slate-400">
-                        {activePlanPolicy.features.aiFixDoctor
-                          ? 'Paste this single configuration snippet into your repository to harden all web headers instantly:'
-                          : 'Copy-paste Master Header remediation packs for Vercel, Next.js & Express unlock on Pro Security ($15/mo) and Team & Agency.'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {activePlanPolicy.features.aiFixDoctor ? (
-                    <div className="flex items-center gap-1 bg-[#050811] p-1 rounded-xl border border-white/10 text-xs shrink-0">
-                      {(['vercel', 'nextjs', 'express'] as const).map((tab) => (
-                        <button
-                          key={tab}
-                          onClick={() => setMasterTab(tab)}
-                          className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
-                            masterTab === tab ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'
-                          }`}
-                        >
-                          {tab === 'vercel' ? 'Vercel' : tab === 'nextjs' ? 'Next.js' : 'Node/Express'}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={openPricingPage}
-                      className="px-3.5 py-2 rounded-xl text-xs font-extrabold bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 hover:brightness-110 transition-all inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
-                    >
-                      <Lock className="w-3.5 h-3.5" />
-                      <span>Unlock Master Fix</span>
-                    </button>
-                  )}
-                </div>
-
-                {activePlanPolicy.features.aiFixDoctor && (
-                  <div className="rounded-2xl border border-white/10 bg-[#050811] overflow-hidden text-xs">
-                    <div className="flex items-center justify-between px-4 py-2.5 bg-white/[0.04] border-b border-white/10">
-                      <div className="flex items-center gap-2 text-slate-300 font-mono text-[11px]">
-                        <Code2 className="w-4 h-4 text-emerald-400" />
-                        <span>{masterCodes[masterTab].filename}</span>
-                      </div>
-                      <button
-                        onClick={() => handleCopyMaster(masterCodes[masterTab].code)}
-                        className="flex items-center gap-1.5 text-xs font-bold text-emerald-300 hover:text-emerald-200 transition-colors bg-emerald-500/15 px-3 py-1 rounded-lg border border-emerald-500/30 cursor-pointer"
-                      >
-                        {masterCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                        {masterCopied ? 'Copied!' : 'Copy Config'}
-                      </button>
-                    </div>
-                    <pre className="p-4 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed select-all max-h-48">
-                      {masterCodes[masterTab].code}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Findings Filter Bar */}
-            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  onClick={() => setFilter('vulns')}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    filter === 'vulns'
-                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                      : 'text-slate-400 hover:text-slate-200 bg-white/[0.03] border border-white/5'
-                  }`}
-                >
-                  Vulnerabilities ({report.findings.filter((f) => f.severity !== 'PASS' && f.severity !== 'INFO').length})
-                </button>
-                <button
-                  onClick={() => setFilter('pass')}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    filter === 'pass'
-                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                      : 'text-slate-400 hover:text-slate-200 bg-white/[0.03] border border-white/5'
-                  }`}
-                >
-                  {(() => {
-                    const passAndInfoCount = report.findings.filter(
-                      (f) => f.severity === 'PASS' || f.severity === 'INFO'
-                    ).length;
-                    const hasInfo = report.findings.some((f) => f.severity === 'INFO');
-                    return `${hasInfo ? 'Passed & Info' : 'Passed Checks'} (${passAndInfoCount})`;
-                  })()}
-                </button>
-                <button
-                  onClick={() => setFilter('all')}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    filter === 'all'
-                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                      : 'text-slate-400 hover:text-slate-200 bg-white/[0.03] border border-white/5'
-                  }`}
-                >
-                  All Items ({report.findings.length})
-                </button>
-              </div>
-            </div>
-
-            {/* Findings List */}
-            <div className="flex flex-col gap-3">
-              {filteredFindings.length === 0 ? (
-                <div className="p-10 text-center glass-card rounded-2xl text-slate-400 text-xs font-medium">
-                  No security findings match this filter. Switch to "All Items" or "Passed Checks" to view full audit telemetry!
-                </div>
-              ) : (
-                filteredFindings.map((finding, idx) => (
-                  <FindingCard
-                    key={idx}
-                    finding={finding}
-                    detectedTech={report.telemetry?.detectedTech}
-                    targetUrl={report.targetUrl}
-                    defaultExpanded={idx < 2}
-                    canUseAiFixDoctor={activePlanPolicy.features.aiFixDoctor}
-                    onRequestUpgrade={openPricingPage}
-                  />
-                ))
-              )}
-            </div>
-
-            {/* ── Enterprise Automated Audit Disclaimer (Screen + PDF Export) ── */}
-            <div className="glass-card rounded-2xl border border-white/10 p-4 sm:p-5 text-[11px] text-slate-400 leading-relaxed space-y-1.5 print:break-inside-avoid">
-              <div className="flex items-center gap-2 text-slate-200 font-extrabold uppercase tracking-wider text-[10px]">
-                <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
-                <span>Automated Point-in-Time Security Assessment Disclaimer</span>
-              </div>
-              <p>
-                This report reflects automated static analysis and non-destructive passive/safe dynamic checks performed by{' '}
-                <strong className="text-slate-300">CheckMyAPK.com</strong> at{' '}
-                <span className="font-mono text-slate-300">{report.scanTimestamp}</span>. Items labeled{' '}
-                <span className="text-emerald-300 font-bold">Confirmed</span> were verified via live HTTP/TLS/DNS telemetry,
-                read-only probes, or manifest/bytecode structure; items labeled{' '}
-                <span className="text-amber-300 font-bold">Heuristic • Verify Context</span> use static pattern matching and
-                may require engineer review for upstream sanitizers, WAF rules, or API/HTTP-referrer restrictions.
-              </p>
-              <p className="text-slate-500">
-                Automated scanners cannot detect every server-side or business-logic flaw and are not a substitute for an
-                authorized manual penetration test or formal compliance audit (SOC 2 / ISO 27001). Always assess only domains
-                and applications you own or have explicit authorization to test.
-              </p>
-            </div>
-          </div>
+          <SecurityReportDashboard
+            report={report}
+            scoreDelta={scoreDelta}
+            activePlanPolicy={activePlanPolicy}
+            masterCodes={masterCodes}
+            domainChallenge={domainChallenge}
+            onLoadDomainChallenge={handleLoadDomainChallenge}
+            onNewAudit={() => {
+              setReport(null);
+              setApkFile(null);
+              window.setTimeout(() => {
+                document
+                  .getElementById('scanner-command')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }, 80);
+            }}
+            onRescanWeb={(targetUrl) => {
+              setScanMode('web');
+              setUrl(targetUrl);
+              void handleScanWeb(targetUrl);
+              window.setTimeout(() => {
+                document
+                  .getElementById('scanner-command')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }, 80);
+            }}
+            onExportJson={handleExportJson}
+            onExportMarkdown={handleExportMarkdown}
+            onCopyMarkdown={handleCopyMarkdown}
+            mdCopied={mdCopied}
+            onRequestUpgrade={openPricingPage}
+          />
         )}
       </main>
 
@@ -3709,9 +2391,17 @@ export default function App() {
       {authModalMode && (
         <AuthModal
           initialMode={authModalMode}
+          notice={
+            pendingScan
+              ? pendingScan.mode === 'apk'
+                ? `Sign in to audit "${pendingScan.file.name}". Your APK is ready and the scan will start automatically once you sign in.`
+                : `Sign in to audit "${pendingScan.targetUrl}". Your scan will start automatically once you sign in.`
+              : null
+          }
           onClose={() => {
             setAuthModalMode(null);
             setPendingCheckout(null);
+            setPendingScan(null);
           }}
           onSuccess={(user) => {
             setCurrentUser(user);
@@ -3720,6 +2410,14 @@ export default function App() {
               const next = pendingCheckout;
               setPendingCheckout(null);
               void startDodoCheckout(next.plan, next.billingCycle);
+            } else if (pendingScan) {
+              const queued = pendingScan;
+              setPendingScan(null);
+              if (queued.mode === 'apk') {
+                void handleScanApk(queued.file, user);
+              } else {
+                void handleScanWeb(queued.targetUrl, user);
+              }
             }
           }}
         />
@@ -3729,7 +2427,19 @@ export default function App() {
       <footer className="py-6 border-t border-white/[0.08] bg-[#070a09]/90 text-xs text-slate-400 relative z-10 no-print">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3">
           <span className="font-display font-semibold text-white tracking-[-0.02em]">
-            CheckMyAPK <span className="font-sans font-normal text-slate-400">· Android APK &amp; Web Security Scanner</span>
+            <a
+              href="/"
+              onClick={(e) => {
+                if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.button === 0) {
+                  e.preventDefault();
+                  goHome();
+                }
+              }}
+              className="hover:text-emerald-400 transition-colors cursor-pointer"
+            >
+              CheckMyAPK
+            </a>{' '}
+            <span className="font-sans font-normal text-slate-400">· Android APK &amp; Web Security Scanner</span>
           </span>
           <div className="flex flex-wrap items-center justify-center gap-5 text-[12px] font-medium">
             <button

@@ -210,6 +210,60 @@ export function analyzeJwtSecurity(
     const nowSec = Math.floor(Date.now() / 1000);
     const expired = hasExp ? payload.exp < nowSec : false;
 
+    // Recognize Supabase public anon keys vs privileged service_role keys
+    const isSupabaseJwt =
+      String(payload.iss || '').toLowerCase() === 'supabase' &&
+      typeof payload.ref === 'string' &&
+      typeof payload.role === 'string';
+    const supabaseRole = isSupabaseJwt ? String(payload.role).toLowerCase() : '';
+
+    if (isSupabaseJwt && supabaseRole === 'service_role') {
+      issues.push('Privileged Supabase service_role JWT exposed in client code');
+      findings.push({
+        category: 'Authentication & JWT Security',
+        type: 'Supabase Service Role Secret Key Exposed in Client Bundle',
+        severity: 'CRITICAL',
+        owaspRef: 'OWASP-A02',
+        proof: `Supabase service_role JWT (ref=${payload.ref}, alg=${alg}) exposed inside ${item.source}.`,
+        description:
+          'A Supabase service_role key bypasses ALL PostgreSQL Row Level Security (RLS) policies, granting any attacker full read/write/delete access to your entire database.',
+        remediation:
+          'Rotate your Supabase service_role key immediately in Dashboard -> Project Settings -> API and move all admin database calls strictly to a backend server.'
+      });
+      audits.push({
+        source: item.source,
+        alg,
+        hasExp,
+        expired,
+        claims: Object.keys(payload).slice(0, 10),
+        issues
+      });
+      continue;
+    }
+
+    if (isSupabaseJwt && supabaseRole === 'anon' && item.fromClientBundle) {
+      findings.push({
+        category: 'Authentication & JWT Security',
+        type: 'Supabase Public Anon Key Detected (Verify PostgreSQL RLS)',
+        severity: 'INFO',
+        owaspRef: 'OWASP-A05',
+        proof: `Public Supabase anon JWT (ref=${payload.ref}, role=anon) detected in ${item.source}.`,
+        description:
+          'Supabase anon keys are designed to be shipped publicly in client bundles. Security depends strictly on enforcing PostgreSQL Row Level Security (RLS) policies on every table.',
+        remediation:
+          'Confirm Row Level Security (RLS) is ENABLED with strict auth.uid() policies on all public tables, and never expose your service_role key in client code.'
+      });
+      audits.push({
+        source: item.source,
+        alg,
+        hasExp,
+        expired,
+        claims: Object.keys(payload).slice(0, 10),
+        issues: ['Public Supabase anon key (verify RLS)']
+      });
+      continue;
+    }
+
     if (alg.toLowerCase() === 'none' || (parts[2] === '' && alg.toLowerCase() !== 'none')) {
       issues.push('Unsecured alg: none or unsigned JWT');
       findings.push({
@@ -403,7 +457,14 @@ export function scanDomXssSinks(
     {
       label: "postMessage('*', '*')",
       findingType: 'Insecure Cross-Window postMessage Wildcard or Missing Origin Check',
-      regex: /\.postMessage\s*\([^,\n]{1,70},\s*(['"`])\*(\1)\s*\)/g
+      regex: /\.postMessage\s*\([^,\n]{1,70},\s*(['"`])\*(\1)\s*\)/g,
+      isSafe: (fullMatch) => {
+        // Ignore empty/constant scheduler polyfills used by React/Next.js/setImmediate (e.g. .postMessage("", "*"))
+        if (/\.postMessage\s*\(\s*(?:['"`]{2}|null|undefined|0|1)\s*,\s*['"`]\*['"`]\s*\)/i.test(fullMatch)) {
+          return true;
+        }
+        return false;
+      }
     },
     {
       label: 'postMessage Missing Origin Check',

@@ -93,11 +93,11 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
     return {
       gradle: {
         filename: 'android/app/build.gradle',
-        code: `android {\n    buildTypes {\n        release {\n            debuggable false\n            minifyEnabled true\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'\n        }\n    }\n}`
+        code: `android {\n    buildTypes {\n        release {\n            debuggable false\n            minifyEnabled true\n            shrinkResources true\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'\n        }\n    }\n}`
       },
       manifest: {
-        filename: 'AndroidManifest.xml',
-        code: `<!-- Ensure android:debuggable is false or omitted in release builds -->\n<application\n    android:debuggable="false"\n    android:icon="@mipmap/ic_launcher"\n    ... >`
+        filename: 'AndroidManifest.xml (Remove Hardcoded Attribute)',
+        code: `<!-- Remove android:debuggable completely from AndroidManifest.xml -->\n<!-- Android Gradle automatically sets debuggable=false for release builds -->\n<application\n    android:icon="@mipmap/ic_launcher"\n    android:allowBackup="false">`
       }
     };
   }
@@ -119,7 +119,7 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
     return {
       manifest: {
         filename: 'AndroidManifest.xml',
-        code: `<!-- Disallow extraction of SQLite databases and private auth tokens via adb backup -->\n<application\n    android:allowBackup="false"\n    android:fullBackupContent="false"\n    ... >`
+        code: `<!-- Block adb backup & cloud backup of private SQLite DBs and auth tokens (Android 11 & 12+) -->\n<application\n    android:allowBackup="false"\n    android:fullBackupContent="false"\n    android:dataExtractionRules="@xml/data_extraction_rules">`
       }
     };
   }
@@ -127,8 +127,8 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
   if (type.includes('Target SDK')) {
     return {
       gradle: {
-        filename: 'android/app/build.gradle',
-        code: `android {\n    compileSdkVersion 35\n    defaultConfig {\n        minSdkVersion 24\n        targetSdkVersion 35 // Android 15+ Play Store compliant\n    }\n}`
+        filename: 'android/app/build.gradle (AGP 8+)',
+        code: `android {\n    compileSdk 35\n    defaultConfig {\n        minSdk 24\n        targetSdk 35 // Android 15+ Play Store compliant\n    }\n}`
       }
     };
   }
@@ -146,7 +146,11 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
     return {
       manifest: {
         filename: 'AndroidManifest.xml',
-        code: `<!-- Remove SYSTEM_ALERT_WINDOW from manifest unless strictly needed for floating PIP -->\n<!-- Delete this line: <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" /> -->\n\n// In Activity: Enable filterTouchesWhenObscured to block overlay tapjacking:\nview.setFilterTouchesWhenObscured(true);`
+        code: `<!-- Remove SYSTEM_ALERT_WINDOW from AndroidManifest.xml unless strictly required for floating overlays -->\n<!-- Delete: <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" /> -->`
+      },
+      kotlin: {
+        filename: 'MainActivity.kt (Block Overlay Tapjacking)',
+        code: `// Reject touch events when another app draws an overlay above sensitive screens:\noverride fun onCreate(savedInstanceState: Bundle?) {\n    super.onCreate(savedInstanceState)\n    window.decorView.filterTouchesWhenObscured = true\n}`
       }
     };
   }
@@ -181,8 +185,12 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
   if (type.includes('Certificate Pinning')) {
     return {
       xml: {
-        filename: 'res/xml/network_security_config.xml + OkHttp',
-        code: `<!-- 1. Add <pin-set> to res/xml/network_security_config.xml -->\n<domain-config cleartextTrafficPermitted="false">\n  <domain includeSubdomains="true">api.yourapp.com</domain>\n  <pin-set expiration="2027-12-31">\n    <pin digest="SHA-256">PRIMARY_SPKI_BASE64_HASH=</pin>\n    <pin digest="SHA-256">BACKUP_SPKI_BASE64_HASH=</pin>\n  </pin-set>\n</domain-config>\n\n// 2. Or OkHttp CertificatePinner in Kotlin:\nval pinner = CertificatePinner.Builder()\n  .add("api.yourapp.com", "sha256/PRIMARY_SPKI_BASE64_HASH=")\n  .build()`
+        filename: 'res/xml/network_security_config.xml',
+        code: `<?xml version="1.0" encoding="utf-8"?>\n<network-security-config>\n  <domain-config cleartextTrafficPermitted="false">\n    <domain includeSubdomains="true">api.yourapp.com</domain>\n    <pin-set expiration="2027-12-31">\n      <pin digest="SHA-256">PRIMARY_SPKI_BASE64_HASH=</pin>\n      <pin digest="SHA-256">BACKUP_SPKI_BASE64_HASH=</pin>\n    </pin-set>\n  </domain-config>\n</network-security-config>`
+      },
+      okhttp: {
+        filename: 'NetworkClient.kt (OkHttp CertificatePinner)',
+        code: `val pinner = CertificatePinner.Builder()\n    .add("api.yourapp.com", "sha256/PRIMARY_SPKI_BASE64_HASH=")\n    .add("api.yourapp.com", "sha256/BACKUP_SPKI_BASE64_HASH=")\n    .build()\n\nval client = OkHttpClient.Builder()\n    .certificatePinner(pinner)\n    .build()`
       }
     };
   }
@@ -398,7 +406,7 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
       },
       nginx: {
         filename: '/etc/nginx/conf.d/cors.conf',
-        code: `# Reject untrusted origins instead of reflecting $http_origin blindly:\nif ($http_origin ~* "^https://(www\\.)?yourdomain\\.com$") {\n  add_header Access-Control-Allow-Origin "$http_origin" always;\n  add_header Access-Control-Allow-Credentials "true" always;\n}`
+        code: `# Reject untrusted origins instead of reflecting $http_origin blindly:\nif ($http_origin ~* "^https://(www\\.)?yourdomain\\.com$") {\n  add_header Access-Control-Allow-Origin "$http_origin" always;\n  add_header Access-Control-Allow-Credentials "true" always;\n  add_header Vary "Origin" always;\n}`
       }
     };
   }
@@ -500,7 +508,7 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
       },
       nextjs: {
         filename: 'middleware.ts (Upstash Rate Limiting)',
-        code: `import { Ratelimit } from '@upstash/ratelimit';\nimport { Redis } from '@upstash/redis';\nimport { NextResponse } from 'next/server';\n\nconst ratelimit = new Ratelimit({\n  redis: Redis.fromEnv(),\n  limiter: Ratelimit.slidingWindow(20, '1 m'),\n});\n\nexport async function middleware(request) {\n  const ip = request.ip ?? '127.0.0.1';\n  const { success } = await ratelimit.limit(ip);\n  if (!success) return new NextResponse('Rate limit exceeded', { status: 429 });\n  return NextResponse.next();\n}`
+        code: `import { Ratelimit } from '@upstash/ratelimit';\nimport { Redis } from '@upstash/redis';\nimport { NextRequest, NextResponse } from 'next/server';\n\nconst ratelimit = new Ratelimit({\n  redis: Redis.fromEnv(),\n  limiter: Ratelimit.slidingWindow(20, '1 m'),\n});\n\nexport async function middleware(request: NextRequest) {\n  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? '127.0.0.1';\n  const { success } = await ratelimit.limit(ip);\n  if (!success) return new NextResponse('Rate limit exceeded', { status: 429 });\n  return NextResponse.next();\n}`
       },
       nginx: {
         filename: 'nginx.conf',
@@ -517,7 +525,7 @@ function getPreconfiguredFixes(type: string, targetUrl: string): Record<string, 
     return {
       express: {
         filename: '.env & server.ts (Backend Proxy Pattern)',
-        code: `// 1. In .env:\nAPI_SECRET_KEY=sk_your_private_key\n\n// 2. In server.ts (DO NOT expose key in client bundles):\napp.post('/api/secure-action', async (req, res) => {\n  const apiKey = process.env.API_SECRET_KEY;\n  const response = await fetch('https://api.external.com', {\n    headers: { 'Authorization': \`Bearer \${apiKey}\` },\n    body: JSON.stringify(req.body)\n  });\n  res.json(await response.json());\n});`
+        code: `// 1. In .env:\nAPI_SECRET_KEY=sk_your_private_key\n\n// 2. In server.ts (DO NOT expose key in client bundles):\napp.post('/api/secure-action', async (req, res) => {\n  const apiKey = process.env.API_SECRET_KEY;\n  const response = await fetch('https://api.external.com', {\n    method: 'POST',\n    headers: {\n      'Authorization': \`Bearer \${apiKey}\`,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify(req.body)\n  });\n  res.status(response.status).json(await response.json());\n});`
       },
       nextjs: {
         filename: 'app/api/route.ts (Serverless Route)',
@@ -675,36 +683,36 @@ export const FindingCard: React.FC<FindingCardProps> = ({
   };
 
   return (
-    <div className={`rounded-2xl border border-l-4 ${leftAccent} transition-all overflow-hidden glass-card ${
-      isPass ? 'border-white/5 hover:border-emerald-500/30' : 'border-white/10 hover:border-cyan-500/30 shadow-lg'
+    <div className={`wb-surface rounded-xl border-l-[3px] ${leftAccent} transition-all overflow-hidden print:break-inside-avoid ${
+      isPass ? 'hover:border-emerald-500/30' : 'hover:border-white/20'
     }`}>
       {/* ── Main Header ── */}
-      <div 
-        onClick={() => setExpanded(!expanded)} 
-        className="p-4 sm:p-5 flex items-start justify-between gap-3 cursor-pointer select-none hover:bg-white/[0.02] transition-colors"
+      <div
+        onClick={() => setExpanded(!expanded)}
+        className="wb-spec-row px-4 sm:px-5 py-4 flex items-start justify-between gap-3 cursor-pointer select-none transition-colors"
       >
-        <div className="flex items-start gap-3">
+        <div className="flex items-start gap-3 min-w-0">
           <div className="mt-0.5 shrink-0">
             {isPass ? (
-              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
             ) : (
-              <ShieldAlert className={`w-5 h-5 ${finding.severity === 'CRITICAL' ? 'text-rose-500' : 'text-orange-400'}`} />
+              <ShieldAlert className={`w-4 h-4 ${finding.severity === 'CRITICAL' ? 'text-rose-400' : finding.severity === 'HIGH' ? 'text-amber-400' : 'text-cyan-400'}`} />
             )}
           </div>
-          <div>
-            <div className="flex items-center gap-2 flex-wrap mb-1">
-              <span className={`text-[10px] uppercase font-black px-2 py-0.5 rounded-md border ${badgeStyle}`}>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
+              <span className={`font-mono text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded border ${badgeStyle}`}>
                 {finding.severity}
               </span>
               {finding.owaspRef && (
-                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-300 border border-cyan-500/25">
+                <span className="font-mono text-[10px] font-medium px-1.5 py-0.5 rounded wb-spec-code">
                   {finding.owaspRef}
                 </span>
               )}
               {(() => {
                 const policyTag = getPlayComplianceTag(finding);
                 return policyTag ? (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                  <span className="font-mono text-[10px] font-medium px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25">
                     {policyTag}
                   </span>
                 ) : null;
@@ -714,30 +722,34 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                 return (
                   <span
                     title={conf.tooltip}
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${conf.style}`}
+                    className={`font-mono text-[10px] font-medium px-1.5 py-0.5 rounded border ${conf.style}`}
                   >
                     {conf.label}
                   </span>
                 );
               })()}
-              <span className="text-[11px] font-bold text-slate-400">
+              <span className="text-[11px] text-slate-400 ml-0.5">
                 {finding.category}
               </span>
             </div>
-            <h4 className="text-sm font-bold text-slate-100 leading-snug">
+            <h4 className="text-[13.5px] font-display font-semibold tracking-[-0.01em] text-white leading-snug">
               {finding.type}
             </h4>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 no-print">
           {!isPass && (
-            <span className="text-[10px] font-bold text-cyan-400 bg-cyan-950/40 border border-cyan-800/50 px-2 py-1 rounded-lg hidden sm:flex items-center gap-1">
+            <span className="font-mono text-[10px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded hidden sm:inline-flex items-center gap-1">
               <Code2 className="w-3 h-3" />
-              Fix Available
+              Patch Ready
             </span>
           )}
-          <button className="text-slate-400 p-1 hover:text-slate-200 shrink-0">
+          <button
+            type="button"
+            aria-label={expanded ? 'Collapse finding' : 'Expand finding'}
+            className="text-slate-400 p-1 hover:text-white shrink-0 cursor-pointer"
+          >
             {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
         </div>
@@ -745,49 +757,49 @@ export const FindingCard: React.FC<FindingCardProps> = ({
 
       {/* ── Expanded Deep Breakdown ── */}
       {expanded && (
-        <div className="p-4 pt-0 space-y-4 text-xs border-t border-[#1a1f2e] mt-1 bg-[#0b0d14]/60">
-          
-          {/* 1. Threat & Real-World Risk */}
-          <div className="pt-3">
-            <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1.5 mb-1.5">
+        <div className="px-4 sm:px-5 pb-5 pt-4 space-y-4 text-xs border-t border-white/10 wb-surface-muted border-x-0 border-b-0">
+
+          {/* 1. Risk & Impact */}
+          <div className="space-y-1.5">
+            <span className="font-mono text-[10px] font-semibold uppercase text-slate-400 tracking-[0.12em] flex items-center gap-1.5">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-              Khatra & Impact (Why This is Dangerous):
+              Risk &amp; Impact
             </span>
-            <p className="text-slate-300 leading-relaxed font-normal bg-[#10131d] p-3 rounded-xl border border-[#1d2233]">
+            <p className="text-slate-300 leading-relaxed wb-surface p-3 rounded-lg">
               {finding.description}
             </p>
           </div>
 
-          {/* 2. Proof of Vulnerability */}
+          {/* 2. Artifact Evidence */}
           {finding.proof && (
-            <div>
-              <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1.5 mb-1.5">
-                <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-                Proof of Vulnerability (Exact Artifact Evidence):
+            <div className="space-y-1.5">
+              <span className="font-mono text-[10px] font-semibold uppercase text-slate-400 tracking-[0.12em] flex items-center gap-1.5">
+                <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+                Artifact Evidence
               </span>
-              <div className="bg-[#07090e] border border-[#1a1f2c] rounded-xl p-3 font-mono text-[11px] text-cyan-300 break-all select-all">
+              <div className="wb-ide-evidence border border-white/10 rounded-lg p-3 font-mono text-[11px] text-cyan-400 break-all select-all">
                 {finding.proof}
               </div>
             </div>
           )}
 
-          {/* 3. STEP-BY-STEP FIX & CODE (If Vulnerability) */}
+          {/* 3. Remediation Patch (Locked vs Unlocked) */}
           {!isPass && !canUseAiFixDoctor && (
-            <div className="p-4 rounded-2xl bg-[#0d1017] border border-amber-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="p-4 rounded-xl wb-surface border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="space-y-1">
-                <div className="text-xs font-black text-amber-300 flex items-center gap-1.5">
+                <div className="text-xs font-display font-semibold text-amber-400 flex items-center gap-1.5">
                   <Lock className="w-3.5 h-3.5" />
-                  <span>AI Code Fix Doctor &amp; Copy-Paste Code Patches</span>
+                  <span>Copy-Paste Code Patches &amp; AI Fix Doctor</span>
                 </div>
-                <p className="text-[11px] text-slate-400">
-                  {finding.remediation} Upgrade to <strong className="text-white">Pro Security ($15/mo)</strong> for full step-by-step code patches &amp; Gemini 3.8 Flash remediation.
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  {finding.remediation} Upgrade to <strong className="text-white">Pro Security</strong> for ready-to-paste code patches and Gemini remediation.
                 </p>
               </div>
               {onRequestUpgrade && (
                 <button
                   type="button"
                   onClick={onRequestUpgrade}
-                  className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-400 to-emerald-400 hover:brightness-110 text-slate-950 font-black text-[11px] inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
+                  className="wb-emerald-btn h-9 px-3.5 rounded-md font-semibold text-[11px] inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
                 >
                   <span>Unlock Fix Code</span>
                   <ArrowRight className="w-3.5 h-3.5" />
@@ -797,23 +809,23 @@ export const FindingCard: React.FC<FindingCardProps> = ({
           )}
 
           {!isPass && canUseAiFixDoctor && (
-            <div className="space-y-3 bg-[#0d1017] p-4 rounded-2xl border border-cyan-500/20">
-              
+            <div className="space-y-3 wb-surface p-4 rounded-xl">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <span className="text-[11px] font-black uppercase text-emerald-400 tracking-wider flex items-center gap-1.5">
-                  <Lightbulb className="w-4 h-4 text-emerald-400" />
-                  Step-by-Step Code Solution:
+                <span className="font-mono text-[10.5px] font-semibold uppercase text-emerald-400 tracking-[0.12em] flex items-center gap-1.5">
+                  <Lightbulb className="w-3.5 h-3.5 text-emerald-400" />
+                  Recommended Code Patch
                 </span>
 
                 {/* Dynamic Framework Selector Tabs */}
                 {availableTabs.length > 1 && (
-                  <div className="flex items-center gap-1 bg-[#141824] p-1 rounded-xl border border-[#22293d] text-[10px] flex-wrap">
+                  <div className="inline-flex items-center gap-1 wb-surface-muted p-1 rounded-md text-[10px] font-mono flex-wrap no-print">
                     {availableTabs.map((t) => (
                       <button
                         key={t}
+                        type="button"
                         onClick={() => setActiveTab(t)}
-                        className={`px-2 py-0.5 rounded-lg font-bold transition-all cursor-pointer ${
-                          activeTab === t ? 'bg-cyan-500 text-black' : 'text-slate-400 hover:text-white'
+                        className={`px-2 py-0.5 rounded font-medium transition-colors cursor-pointer ${
+                          activeTab === t ? 'bg-emerald-500/20 text-emerald-400 font-semibold' : 'text-slate-400 hover:text-white'
                         }`}
                       >
                         {getTabLabel(t)}
@@ -824,77 +836,82 @@ export const FindingCard: React.FC<FindingCardProps> = ({
               </div>
 
               {/* Code Snippet Box */}
-              <div className="relative rounded-xl border border-[#1e2538] bg-[#07090e] overflow-hidden">
-                <div className="flex items-center justify-between px-3 py-1.5 bg-[#121622] border-b border-[#1e2538] text-[11px]">
-                  <div className="flex items-center gap-1.5 text-slate-300 font-mono">
-                    <FileCode className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>{currentSnippet.filename}</span>
+              <div className="relative rounded-lg border border-white/10 wb-surface-muted overflow-hidden print:break-inside-avoid">
+                <div className="wb-ide-chrome flex items-center justify-between px-3 py-2 border-b border-white/10 text-[11px]">
+                  <div className="flex items-center gap-1.5 text-slate-300 font-mono truncate">
+                    <FileCode className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span className="truncate">{currentSnippet.filename}</span>
                   </div>
                   <button
+                    type="button"
                     onClick={() => handleCopy(currentSnippet.code)}
-                    className="flex items-center gap-1 text-[10px] font-bold text-cyan-300 hover:text-cyan-200 transition-colors bg-cyan-950/60 px-2.5 py-1 rounded-lg border border-cyan-800/40 cursor-pointer"
+                    className={`no-print inline-flex items-center gap-1 text-[10px] font-mono font-medium transition-colors px-2.5 py-1 rounded border cursor-pointer shrink-0 ${
+                      copied
+                        ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-400'
+                        : 'bg-white/[0.05] hover:bg-white/[0.1] border-white/10 text-slate-300 hover:text-white'
+                    }`}
                   >
                     {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                    {copied ? 'Copied to Clipboard!' : 'Copy Code'}
+                    {copied ? 'Copied' : 'Copy Code'}
                   </button>
                 </div>
-                <pre className="p-3 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed select-all">
+                <pre className="p-3.5 text-[11px] font-mono text-emerald-300 overflow-x-auto leading-relaxed select-all">
                   {currentSnippet.code}
                 </pre>
               </div>
 
-              {/* 🤖 On-Demand AI Fix Doctor (Gemini 3.8 Flash) */}
-              <div className="pt-2 border-t border-[#1a1f2e]">
+              {/* On-Demand AI Fix Doctor */}
+              <div className={`pt-2 border-t border-white/10 ${!aiFixData ? 'no-print' : ''}`}>
                 {!aiFixData && !loadingAiFix && (
                   <button
+                    type="button"
                     onClick={handleAskAiDoctor}
-                    className="w-full py-2.5 px-3 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-950/80 via-blue-950/80 to-purple-950/80 hover:from-cyan-900/80 hover:to-purple-900/80 text-cyan-300 border border-cyan-500/30 flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg hover:shadow-cyan-500/10"
+                    className="w-full py-2.5 px-3 rounded-lg text-xs font-medium bg-emerald-500/[0.08] hover:bg-emerald-500/[0.14] text-emerald-400 border border-emerald-500/25 flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
-                    <Sparkles className="w-4 h-4 text-cyan-400" />
-                    <span>Ask Gemini 3.8 Flash: Explain & Write Custom Fix in Simple Hindi/English</span>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Ask Gemini AI: Explain &amp; Generate Custom Fix</span>
                   </button>
                 )}
 
                 {loadingAiFix && (
-                  <div className="p-3 rounded-xl bg-[#090b12] border border-cyan-500/30 flex items-center justify-center gap-2 text-cyan-300 text-xs font-bold animate-pulse">
-                    <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
-                    <span>Gemini 3.8 Flash Neural Engine is analyzing the APK & drafting remediation...</span>
+                  <div className="p-3 rounded-lg wb-surface-muted border border-emerald-500/30 flex items-center justify-center gap-2 text-emerald-400 text-xs font-medium animate-pulse">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Drafting custom remediation patch...</span>
                   </div>
                 )}
 
                 {aiFixError && (
-                  <div className="p-2.5 text-xs text-rose-300 bg-rose-950/30 border border-rose-800/40 rounded-xl">
+                  <div className="p-2.5 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/25 rounded-lg">
                     {aiFixError}
                   </div>
                 )}
 
-                {/* AI Fix Doctor Results */}
                 {aiFixData && (
-                  <div className="p-3.5 rounded-xl bg-[#090c14] border border-cyan-500/30 space-y-3">
-                    <div className="flex items-center gap-2 text-cyan-400 font-bold text-xs">
-                      <Sparkles className="w-4 h-4 text-cyan-400" />
+                  <div className="p-3.5 rounded-lg wb-surface-muted border border-emerald-500/25 space-y-3">
+                    <div className="flex items-center gap-2 text-emerald-400 font-mono font-semibold text-[11px] uppercase tracking-wider">
+                      <Sparkles className="w-3.5 h-3.5" />
                       <span>
                         {aiFixData.source === 'deterministic'
-                          ? 'Deterministic Security Rulebook (AI Quota Fallback):'
-                          : 'Gemini 3.8 Flash Deep Remediation Report:'}
+                          ? 'Deterministic Remediation Rulebook'
+                          : 'Gemini AI Deep Remediation'}
                       </span>
                     </div>
 
-                    <div className="space-y-2 text-slate-300 text-[11px] leading-relaxed">
+                    <div className="space-y-2.5 text-slate-300 text-[11.5px] leading-relaxed">
                       <div>
-                        <strong className="text-white block mb-0.5">📌 Asal Kaami Kya Hai (Simple Explanation):</strong>
+                        <strong className="text-white block mb-0.5">Root Cause:</strong>
                         <p>{aiFixData.simpleExplanation}</p>
                       </div>
 
                       <div>
-                        <strong className="text-rose-400 block mb-0.5">🚨 Hacker Attack Scenario (Live Danger):</strong>
-                        <p className="text-rose-200/90">{aiFixData.dangerScenario}</p>
+                        <strong className="text-rose-400 block mb-0.5">Attack Scenario:</strong>
+                        <p className="text-slate-300">{aiFixData.dangerScenario}</p>
                       </div>
 
                       {aiFixData.steps && (
                         <div>
-                          <strong className="text-emerald-400 block mb-1">🛠️ Step-by-Step Action Plan:</strong>
-                          <ul className="list-disc pl-4 space-y-0.5 text-emerald-200/90">
+                          <strong className="text-emerald-400 block mb-1">Action Steps:</strong>
+                          <ul className="list-disc pl-4 space-y-0.5 text-slate-300">
                             {aiFixData.steps.map((st: string, idx: number) => (
                               <li key={idx}>{st}</li>
                             ))}
@@ -905,35 +922,36 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                       {aiFixData.codeBlock && (
                         <div className="mt-2 space-y-2">
                           {aiFixData.beforeCode && (
-                            <div className="rounded-lg border border-rose-500/30 bg-rose-950/20 overflow-hidden">
-                              <div className="px-2.5 py-1 bg-rose-950/40 border-b border-rose-500/25 text-[10px] font-bold text-rose-300">
-                                - Before (Vulnerable Pattern)
+                            <div className="rounded-lg border border-rose-500/25 overflow-hidden">
+                              <div className="px-2.5 py-1 wb-diff-del border-b border-rose-500/20 font-mono text-[10px] font-semibold">
+                                - Vulnerable Pattern
                               </div>
-                              <pre className="p-2.5 text-rose-200/90 font-mono text-[10px] overflow-x-auto select-all">
+                              <pre className="p-2.5 wb-diff-del font-mono text-[10.5px] overflow-x-auto select-all">
                                 {aiFixData.beforeCode}
                               </pre>
                             </div>
                           )}
-                          <div className="rounded-lg border border-emerald-500/35 bg-black overflow-hidden">
-                            <div className="flex items-center justify-between px-2.5 py-1 bg-emerald-950/30 border-b border-emerald-500/25 text-[10px] text-slate-300">
+                          <div className="rounded-lg border border-emerald-500/30 overflow-hidden wb-surface">
+                            <div className="flex items-center justify-between px-2.5 py-1.5 wb-ide-chrome border-b border-white/10 font-mono text-[10px] text-slate-300">
                               <span>
-                                + After (Secure): <strong className="text-cyan-300">{aiFixData.codeBlock.filename}</strong>
+                                + Secure Patch: <strong className="text-emerald-400">{aiFixData.codeBlock.filename}</strong>
                               </span>
                               <button
+                                type="button"
                                 onClick={() => handleCopy(aiFixData.codeBlock.code)}
-                                className="text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1 cursor-pointer"
+                                className="text-emerald-400 hover:underline font-semibold inline-flex items-center gap-1 cursor-pointer"
                               >
                                 <Copy className="w-3 h-3" />
                                 Copy Fix
                               </button>
                             </div>
-                            <pre className="p-2.5 text-emerald-300 font-mono text-[10px] overflow-x-auto select-all">
+                            <pre className="p-2.5 text-emerald-300 font-mono text-[10.5px] overflow-x-auto select-all">
                               {aiFixData.codeBlock.code}
                             </pre>
                           </div>
                           {aiFixData.verifyCommand && (
-                            <div className="px-2.5 py-1.5 rounded-lg bg-[#050811] border border-white/10 text-[10px] font-mono text-slate-400">
-                              Verify: <span className="text-cyan-300">{aiFixData.verifyCommand}</span>
+                            <div className="px-2.5 py-1.5 rounded-lg wb-ide-evidence border border-white/10 text-[10px] font-mono text-slate-400">
+                              Verify: <span className="text-cyan-400">{aiFixData.verifyCommand}</span>
                             </div>
                           )}
                         </div>
@@ -942,22 +960,20 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                   </div>
                 )}
               </div>
-
             </div>
           )}
 
-          {/* If Pass */}
+          {/* Passed Check Confirmation */}
           {isPass && (
-            <div className="bg-emerald-950/20 border border-emerald-900/40 rounded-xl p-3">
-              <span className="text-[10px] font-black uppercase text-emerald-400 tracking-wider block mb-1">
-                🛡️ Defense Status:
+            <div className="bg-emerald-500/[0.06] border border-emerald-500/25 rounded-lg p-3">
+              <span className="font-mono text-[10px] font-semibold uppercase text-emerald-400 tracking-[0.12em] block mb-1">
+                Defense Verified
               </span>
-              <p className="text-emerald-200/90 text-xs font-medium leading-relaxed">
+              <p className="text-slate-300 text-xs leading-relaxed">
                 {finding.remediation}
               </p>
             </div>
           )}
-
         </div>
       )}
     </div>

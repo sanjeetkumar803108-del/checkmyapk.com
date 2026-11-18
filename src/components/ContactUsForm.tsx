@@ -173,10 +173,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-        <span className="text-[11px] text-slate-500">
-          Auto-routed to: <span className="font-mono text-slate-400">checkmyapk.com@gmail.com</span>
-        </span>
+      <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
         <button
           type="submit"
           disabled={sending}

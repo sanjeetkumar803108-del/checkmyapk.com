@@ -26,6 +26,7 @@ export interface UserAccount {
   billingStatus?: 'active' | 'past_due' | 'on_hold' | 'paused' | 'cancelled' | 'expired' | 'failed';
   dodoCustomerId?: string | null;
   dodoSubscriptionId?: string | null;
+  isOwner?: boolean;
   dailyScansUsed: number;
   dailyScanLimit: number | null;
   scanQuotaPeriod?: 'month' | 'day';

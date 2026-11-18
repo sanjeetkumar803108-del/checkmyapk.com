@@ -95,13 +95,31 @@ export async function probeDatabaseSecurity(html: string, scriptsContent: string
     })
   );
 
-  // 3. Sensitive LocalStorage / Session Keys
-  const lsTokenMatch = combined.match(/localStorage\.setItem\(\s*["'](?:token|auth_token|jwt|jwt_token|access_token|id_token)["']/i);
-  if (lsTokenMatch) {
+  // 3. Sensitive LocalStorage / Session Keys (skip comments and remediation/doc example strings)
+  const lsTokenRe = /localStorage\.setItem\(\s*["'](?:token|auth_token|jwt|jwt_token|access_token|id_token)["']/gi;
+  let realLsMatch: string | null = null;
+  for (const m of combined.matchAll(lsTokenRe)) {
+    const idx = m.index ?? 0;
+    const before = combined.slice(Math.max(0, idx - 120), idx);
+    const sameLineBefore = before.split(/\r?\n|\\n/).pop() || '';
+    if (/(?:\/\/|\/\*|\bavoid\b|\bnever\b|\bdon'?t\b|\bexample\b|\binstead\b)/i.test(sameLineBefore)) {
+      continue;
+    }
+    const trimmedBefore = sameLineBefore.trimEnd();
+    if (trimmedBefore.endsWith('"') || trimmedBefore.endsWith("'") || trimmedBefore.endsWith('`')) {
+      continue;
+    }
+    if (sameLineBefore.length > 0 && !/[\s;{(,)=?:!&|.]$/.test(sameLineBefore)) {
+      continue;
+    }
+    realLsMatch = m[0];
+    break;
+  }
+  if (realLsMatch) {
     findings.push({
       type: 'JWT / Auth Token in LocalStorage',
       severity: 'HIGH',
-      proof: `Detected sensitive auth token storage in browser localStorage (${lsTokenMatch[0]}...).`,
+      proof: `Detected sensitive auth token storage in browser localStorage (${realLsMatch}...).`,
       description: 'Storing sensitive authentication tokens in localStorage makes them vulnerable to exfiltration via any Cross-Site Scripting (XSS) vulnerability.',
       remediation: 'Store authentication session tokens in HttpOnly, Secure, SameSite=Strict cookies instead of localStorage.',
       owaspRef: 'OWASP-A07'

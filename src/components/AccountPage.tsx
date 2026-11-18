@@ -32,6 +32,7 @@ interface AccountPageProps {
   onUserUpdated: (user: UserAccount) => void;
   onLogout: () => void;
   onRescanWeb: (targetUrl: string) => void;
+  onRescanApk?: () => void;
   onOpenPricingPage?: () => void;
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
@@ -67,6 +68,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
   onUserUpdated,
   onLogout,
   onRescanWeb,
+  onRescanApk,
   onOpenPricingPage,
   theme = 'dark',
   onToggleTheme,
@@ -108,12 +110,12 @@ export const AccountPage: React.FC<AccountPageProps> = ({
     setBusyPlan(plan);
     setBillingError(null);
     try {
-      if (plan === 'free') {
+      if (plan === 'free' || user.isOwner) {
         const res = await fetch('/api/auth/plan', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ plan: 'free' }),
+          body: JSON.stringify({ plan }),
         });
         const data = await res.json().catch(() => null);
         if (res.ok && data?.user) {
@@ -528,10 +530,16 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                   <span className="text-[11px] font-semibold text-slate-400">
                     Plan &amp; Subscription
                   </span>
-                  {user.billingStatus && (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase bg-emerald-500/15 border border-emerald-400/30 text-emerald-300">
-                      {user.billingStatus.replace('_', ' ')}
+                  {user.isOwner ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase bg-emerald-500/15 border border-emerald-400/35 text-emerald-300 font-semibold">
+                      Owner · All Plans Active
                     </span>
+                  ) : (
+                    user.billingStatus && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase bg-emerald-500/15 border border-emerald-400/30 text-emerald-300">
+                        {user.billingStatus.replace('_', ' ')}
+                      </span>
+                    )
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -742,15 +750,30 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                       <span className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs font-black text-cyan-300">
                         {item.grade} ({item.score})
                       </span>
-                      {item.mode === 'web' && (
+                      {item.mode === 'web' ? (
                         <button
                           type="button"
                           onClick={() => {
-                            onBack();
                             onRescanWeb(item.target);
                           }}
                           title="Re-scan this URL"
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/30 text-[11px] font-bold text-cyan-200 cursor-pointer"
+                        >
+                          Re-scan
+                          <ArrowUpRight className="w-3.5 h-3.5" />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onRescanApk) {
+                              onRescanApk();
+                            } else {
+                              onBack();
+                            }
+                          }}
+                          title="Upload updated APK to re-scan"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-[11px] font-bold text-emerald-300 cursor-pointer"
                         >
                           Re-scan
                           <ArrowUpRight className="w-3.5 h-3.5" />

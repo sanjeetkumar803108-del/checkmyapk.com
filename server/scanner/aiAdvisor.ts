@@ -80,7 +80,12 @@ function buildDeterministicWebSummary(
     return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackLabel}) passed all ${findings.length} automated web security probes across ${meta.scriptsCount} JS bundles with zero critical or high exposures.\n2. 🚨 PRIMARY ATTACK VECTOR: Client-side bundle inspection and HTTP header enforcement look hardened; remain vigilant on authenticated server API endpoints.\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: Keep CSP policies strict without 'unsafe-eval', and audit backend API routes individually for IDOR/BOLA authorization.`;
   }
 
-  return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackLabel}${meta.serverHeader ? `, ${meta.serverHeader}` : ''}) exposed ${vulns.length} security issue(s) (${criticals.length} Critical, ${highs.length} High) across ${meta.scriptsCount} audited JS bundles.\n2. 🚨 PRIMARY ATTACK VECTOR: Highest priority weakness is "${topVuln.type}" (${topVuln.severity}) — ${topVuln.description}\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: (1) Resolve "${topVuln.type}" immediately using the copy-paste config below; (2) Address top priorities (${uniqueTopTypes.join(', ')}); (3) Re-run CheckMyAPK to confirm score uplift.`;
+  const serverIncluded =
+    Boolean(meta.serverHeader) &&
+    stackLabel.toLowerCase().includes(String(meta.serverHeader).toLowerCase());
+  const stackSummary = `${stackLabel}${meta.serverHeader && !serverIncluded ? `, ${meta.serverHeader}` : ''}`;
+
+  return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackSummary}) exposed ${vulns.length} security issue(s) (${criticals.length} Critical, ${highs.length} High) across ${meta.scriptsCount} audited JS bundles.\n2. 🚨 PRIMARY ATTACK VECTOR: Highest priority weakness is "${topVuln.type}" (${topVuln.severity}) — ${topVuln.description}\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: (1) Resolve "${topVuln.type}" immediately using the recommended patch; (2) Address top priorities (${uniqueTopTypes.join(', ')}); (3) Re-run CheckMyAPK to confirm score uplift.`;
 }
 
 function buildDeterministicMobileSummary(

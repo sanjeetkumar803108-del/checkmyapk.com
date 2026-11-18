@@ -6,11 +6,12 @@ import { LEGAL_DOCS_BY_ID, type LegalDocId } from '../data/legalDocs';
 
 interface AuthModalProps {
   initialMode: 'login' | 'register';
+  notice?: string | null;
   onClose: () => void;
   onSuccess: (user: UserAccount) => void;
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ initialMode, onClose, onSuccess }) => {
+export const AuthModal: React.FC<AuthModalProps> = ({ initialMode, notice = null, onClose, onSuccess }) => {
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -239,6 +240,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode, onClose, onSu
           })()
         ) : (
           <>
+        {notice && (
+          <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-medium flex items-start gap-2.5 leading-relaxed">
+            <Lock className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
+            <span>{notice}</span>
+          </div>
+        )}
+
         {/* Mode Switcher */}
         <div className="flex items-center p-1 bg-[#050811]/90 border border-white/10 rounded-xl">
           <button

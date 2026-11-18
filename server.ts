@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -12,10 +13,10 @@ import { probeRateLimiting } from './server/scanner/rateLimitProbe.ts';
 import { computeSecurityScore } from './server/scanner/scoreCalculator.ts';
 import { runWebDeepAudit } from './server/scanner/webDeepScanner.ts';
 import { runNetworkPostureAudit } from './server/scanner/networkPostureScanner.ts';
-import { 
-  generateAiSecuritySummary, 
-  generateVulnerabilityDeepFix, 
-  generateAiMobileAssessment 
+import {
+  generateAiSecuritySummary,
+  generateVulnerabilityDeepFix,
+  generateAiMobileAssessment
 } from './server/scanner/aiAdvisor.ts';
 import { peekApkPackageName, scanApkBuffer } from './server/scanner/apkScanner.ts';
 import { getPlanPolicy, type PlanPolicy } from './src/data/planPolicy.ts';
@@ -69,6 +70,11 @@ import {
   type BillingCycle,
   type PaidAccountPlan,
 } from './server/billing/dodoPayments.ts';
+import {
+  getLiveScanStats,
+  recordCompletedScan,
+  subscribeScanStats,
+} from './server/stats/scanStatsStore.ts';
 
 dotenv.config();
 
@@ -82,7 +88,85 @@ const PORT = process.env.PORT || 5000;
 const IS_PROD = process.env.NODE_ENV === 'production' || process.argv.includes('--prod');
 const MAX_APK_SIZE_MB = Number(process.env.MAX_APK_UPLOAD_MB || 150);
 
-app.use(cors({ origin: true, credentials: true }));
+const ALLOWED_CORS_ORIGINS = new Set<string>([
+  'https://checkmyapk.com',
+  'https://www.checkmyapk.com',
+]);
+
+if (process.env.PUBLIC_APP_URL) {
+  try {
+    ALLOWED_CORS_ORIGINS.add(new URL(process.env.PUBLIC_APP_URL).origin);
+  } catch { }
+}
+
+if (process.env.CORS_ALLOWED_ORIGINS) {
+  for (const rawOrigin of process.env.CORS_ALLOWED_ORIGINS.split(',')) {
+    const trimmed = rawOrigin.trim();
+    if (!trimmed) continue;
+    try {
+      ALLOWED_CORS_ORIGINS.add(new URL(trimmed).origin);
+    } catch { }
+  }
+}
+
+if (!IS_PROD) {
+  ALLOWED_CORS_ORIGINS.add(`http://localhost:${PORT}`);
+  ALLOWED_CORS_ORIGINS.add(`http://127.0.0.1:${PORT}`);
+  ALLOWED_CORS_ORIGINS.add('http://localhost:5173');
+  ALLOWED_CORS_ORIGINS.add('http://127.0.0.1:5173');
+}
+
+const CSP_DIRECTIVES = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  `script-src 'self' 'unsafe-inline'${IS_PROD ? '' : " 'unsafe-eval'"} https://www.googletagmanager.com https://apis.google.com https://accounts.google.com https://*.firebaseapp.com`,
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:",
+  `connect-src 'self'${IS_PROD ? '' : ' ws: wss:'} https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://apis.google.com https://*.firebaseapp.com`,
+  "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://*.web.app",
+].join('; ');
+
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', CSP_DIRECTIVES);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+
+  const isHttps = req.secure || String(req.headers['x-forwarded-proto'] || '').toLowerCase().includes('https');
+  if (IS_PROD || isHttps) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
+  next();
+});
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      return cb(null, ALLOWED_CORS_ORIGINS.has(origin));
+    },
+    credentials: true,
+  })
+);
+
+app.get('/.well-known/security.txt', (_req, res) => {
+  const contactEmail = process.env.CONTACT_RECEIVER_EMAIL || 'security@checkmyapk.com';
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.send(
+    [
+      `Contact: mailto:${contactEmail}`,
+      'Preferred-Languages: en',
+      'Canonical: https://checkmyapk.com/.well-known/security.txt',
+      'Expires: 2028-12-31T23:59:59.000Z',
+    ].join('\n') + '\n'
+  );
+});
 
 // Dodo Payments webhook MUST read the raw JSON payload before express.json() parses it.
 app.post('/api/webhooks/dodo', express.raw({ type: 'application/json' }), (req, res) => {
@@ -259,7 +343,7 @@ function extractScriptUrls(html: string, baseUrl: string): string[] {
     try {
       const resolved = new URL(rawSrc, baseUrl).href;
       urls.push(resolved);
-    } catch (e) {}
+    } catch (e) { }
   }
 
   // Also check for modern Vite/Webpack modulepreload links
@@ -269,7 +353,7 @@ function extractScriptUrls(html: string, baseUrl: string): string[] {
     try {
       const resolved = new URL(rawHref, baseUrl).href;
       if (!urls.includes(resolved)) urls.push(resolved);
-    } catch (e) {}
+    } catch (e) { }
   }
 
   return urls;
@@ -292,6 +376,43 @@ function detectTechnologies(html: string, headers: Record<string, any>): string[
 
   return Array.from(new Set(tech));
 }
+
+// 📊 Live Real-Time Scan Counter API + SSE Stream (100% real persisted counts)
+app.get('/api/stats/scans', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json(getLiveScanStats());
+});
+
+app.get('/api/stats/scans/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const pushSnapshot = (stats: ReturnType<typeof getLiveScanStats>) => {
+    try {
+      res.write(`data: ${JSON.stringify(stats)}\n\n`);
+    } catch {
+      // Connection closed
+    }
+  };
+
+  pushSnapshot(getLiveScanStats());
+  const unsubscribe = subscribeScanStats(pushSnapshot);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+});
 
 // 👤 Authentication, Account & Scan History APIs
 app.get('/api/auth/me', (req, res) => {
@@ -389,6 +510,15 @@ app.post('/api/auth/plan', (req, res) => {
   if (plan !== 'free' && plan !== 'pro' && plan !== 'agency') {
     return res.status(400).json({ error: 'Invalid plan selection.' });
   }
+  const existing = getAccountById(uid);
+  if (!existing) return res.status(401).json({ error: 'Account not found.' });
+
+  if (existing.isOwner) {
+    const user = updateAccountPlan(uid, plan);
+    if (!user) return res.status(401).json({ error: 'Account not found.' });
+    return res.json({ user });
+  }
+
   if (plan !== 'free') {
     return res.status(402).json({
       error: 'Paid plans require Dodo Payments checkout before activation.',
@@ -519,6 +649,12 @@ app.post('/api/scan', async (req, res) => {
   }
 
   const uid = getAuthenticatedUserId(req);
+  if (!uid || !getAccountById(uid)) {
+    return res.status(401).json({
+      error: 'Please sign in to run a Website & API security audit.',
+      code: 'AUTH_REQUIRED',
+    });
+  }
   const activePlan = getAccountPlanById(uid);
   const policy = getPlanPolicy(activePlan);
 
@@ -631,10 +767,10 @@ app.post('/api/scan', async (req, res) => {
       !policy.features.burst15Req
         ? `Starter plan uses safe ${rateBurstCount}-request rate check (upgrade to Pro for verified 15-request burst).`
         : ownership.verified
-        ? `Domain ownership verified via ${ownership.method}; full active checks unlocked.`
-        : ssrfCheck.isLoopback
-        ? `Local dev target detected; running full probe suite.`
-        : `Unverified external domain: running safe ${rateBurstCount}-request non-intrusive profile.`
+          ? `Domain ownership verified via ${ownership.method}; full active checks unlocked.`
+          : ssrfCheck.isLoopback
+            ? `Local dev target detected; running full probe suite.`
+            : `Unverified external domain: running safe ${rateBurstCount}-request non-intrusive profile.`
     );
 
     // Step 2: Extract JavaScript bundles (filter external origins via SSRF guard)
@@ -651,7 +787,7 @@ app.post('/api/scan', async (req, res) => {
           originSafetyCache.set(sOrigin, ok);
         }
         if (ok) scriptUrls.push(sUrl);
-      } catch {}
+      } catch { }
     }
     log(`Discovered ${scriptUrls.length} safe JavaScript bundles & module chunks to audit`);
 
@@ -682,7 +818,7 @@ app.post('/api/scan', async (req, res) => {
             lazyChunkSet.add(resolved.href);
             if (lazyChunkSet.size >= 6) break;
           }
-        } catch {}
+        } catch { }
       }
       if (lazyChunkSet.size >= 6) break;
     }
@@ -733,15 +869,15 @@ app.post('/api/scan', async (req, res) => {
     log(`Fingerprinted technologies: ${detectedTech.join(', ') || 'Standard Web Stack'}`);
     log(
       `Deep Web Surface: ${webDeepResult.surface.discoveredRoutes.length} routes, ` +
-        `${webDeepResult.surface.apiEndpoints.length} API paths, ` +
-        `${webDeepResult.surface.domSinks.length} DOM sinks, ` +
-        `${webDeepResult.surface.jwtAudits.length} JWT(s) audited`
+      `${webDeepResult.surface.apiEndpoints.length} API paths, ` +
+      `${webDeepResult.surface.domSinks.length} DOM sinks, ` +
+      `${webDeepResult.surface.jwtAudits.length} JWT(s) audited`
     );
     log(
       `Network & Supply-Chain Posture: CORS=${networkPostureResult.posture.corsReflection}, ` +
-        `TLS=${networkPostureResult.posture.tlsProtocol || 'HTTP/Local'}, ` +
-        `DMARC=${networkPostureResult.posture.dmarcPolicy || 'none'}, ` +
-        `SRI Missing=${networkPostureResult.posture.missingSriCount}`
+      `TLS=${networkPostureResult.posture.tlsProtocol || 'HTTP/Local'}, ` +
+      `DMARC=${networkPostureResult.posture.dmarcPolicy || 'none'}, ` +
+      `SRI Missing=${networkPostureResult.posture.missingSriCount}`
     );
 
     const transportFindings: any[] = [];
@@ -779,8 +915,8 @@ app.post('/api/scan', async (req, res) => {
     // Step 5: Gemini 3.8 Flash Neural Security Analysis
     log(`Invoking Gemini 3.8 Flash Neural Engine for custom threat synthesis...`);
     const aiSummary = await generateAiSecuritySummary(
-      targetUrl, 
-      allFindings, 
+      targetUrl,
+      allFindings,
       {
         serverHeader: headers['server'] ? String(headers['server']) : undefined,
         scriptsCount: scriptUrls.length,
@@ -814,6 +950,7 @@ app.post('/api/scan', async (req, res) => {
       }
     };
 
+    recordCompletedScan('web');
     return res.json(enrichedResponse);
 
   } catch (err: any) {
@@ -1112,13 +1249,21 @@ function authorizeApkRequest(
     return null;
   }
 
+  const uid = getAuthenticatedUserId(req);
+  if (!uid || !getAccountById(uid)) {
+    res.status(401).json({
+      error: 'Please sign in to run an Android APK security audit.',
+      code: 'AUTH_REQUIRED',
+    });
+    return null;
+  }
+
   const checked = validateApkUpload(req);
   if (checked.error || !checked.buffer) {
     res.status(400).json({ error: checked.error });
     return null;
   }
 
-  const uid = getAuthenticatedUserId(req);
   const plan = getAccountPlanById(uid);
   const policy = getPlanPolicy(plan);
   const maxBytes = policy.maxApkMb * 1024 * 1024;
@@ -1128,8 +1273,8 @@ function authorizeApkRequest(
       policy.id === 'free'
         ? 'Upgrade to Pro Security (75 MB) or Team & Agency (150 MB).'
         : policy.id === 'pro'
-        ? 'Upgrade to Team & Agency ($79/mo) for large APK builds up to 150 MB.'
-        : 'Split large asset packs into Android App Bundle modules.';
+          ? 'Upgrade to Team & Agency ($79/mo) for large APK builds up to 150 MB.'
+          : 'Split large asset packs into Android App Bundle modules.';
     res.status(413).json({
       error: `Your APK (${fileMb} MB) exceeds the ${policy.name} ${policy.maxApkMb} MB limit. ${upgradeHint}`,
     });
@@ -1162,6 +1307,7 @@ app.post('/api/scan-apk', upload.single('apk'), async (req, res) => {
   if (!authApk) return;
   try {
     const result = await runApkAuditPipeline(authApk.buffer, authApk.fileName);
+    recordCompletedScan('apk');
     return res.json(result);
   } catch (err: any) {
     console.error('[ApkAudit] Scan error:', err);
@@ -1190,6 +1336,7 @@ app.post('/api/jobs/scan-apk', upload.single('apk'), (req, res) => {
         const report = await runApkAuditPipeline(apkBuffer, fileName, (progress, stage, timeLabel) => {
           pushScanJobProgress(job.id, progress, stage, timeLabel);
         });
+        recordCompletedScan('apk');
         completeScanJob(job.id, report);
       } catch (err: any) {
         console.error(`[AsyncJob ${job.id}] Failed:`, err);

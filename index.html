@@ -1,8 +1,10 @@
 
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" class="dark" style="color-scheme: dark; background-color: #070a09;">
   <head>
     <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#070a09" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2306b6d4' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/><path d='m9 12 2 2 4-4'/></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
@@ -11,7 +13,7 @@
     <meta name="description" content="Zero-install OWASP MASVS Android APK decompiler, secret scanner, and live website &amp; API vulnerability scanner. Detect leaked API keys, TLS/CORS misconfigurations, and debug backdoors in seconds." />
 
     <!-- Google Analytics 4 -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX"></script>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-VKYQY0LL1B"></script>
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
@@ -32,6 +34,14 @@
           document.documentElement.classList.remove('dark');
           document.documentElement.classList.add('light');
           document.documentElement.style.colorScheme = 'light';
+          document.documentElement.style.backgroundColor = '#ffffff';
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', '#ffffff');
+        } else {
+          document.documentElement.classList.remove('light');
+          document.documentElement.classList.add('dark');
+          document.documentElement.style.colorScheme = 'dark';
+          document.documentElement.style.backgroundColor = '#070a09';
         }
       } catch (e) {}
     </script>

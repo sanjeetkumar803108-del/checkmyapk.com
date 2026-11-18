@@ -408,13 +408,136 @@ html.light .wb-grid-bg {
   animation: wbStageFadeUp 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+/* ── Pro 2-Stage Hero Animation: 3D Flying Letter Wave + Precision Typewriter ── */
+.wb-hero-perspective {
+  perspective: 1100px;
+}
+
+@keyframes wbCharFlyIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(-16px, -34px, 75px) rotateX(-44deg) rotateZ(-5deg) scale(1.18);
+    filter: blur(10px);
+  }
+  65% {
+    opacity: 1;
+    filter: blur(0.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotateX(0deg) rotateZ(0deg) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes wbCharFlyInReverse {
+  0% {
+    opacity: 0;
+    transform: translate3d(18px, 32px, 75px) rotateX(44deg) rotateZ(5deg) scale(1.18);
+    filter: blur(10px);
+  }
+  65% {
+    opacity: 1;
+    filter: blur(0.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotateX(0deg) rotateZ(0deg) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes wbCharTypePop {
+  0% {
+    opacity: 0;
+    transform: translate3d(6px, 11px, 0) scale(0.86);
+    filter: blur(3px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes wbCaretBlink {
+  0%, 48% {
+    opacity: 1;
+  }
+  52%, 100% {
+    opacity: 0.12;
+  }
+}
+
+@keyframes wbCaretFadeOut {
+  0% {
+    opacity: 1;
+  }
+  65% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: scaleY(0.4);
+  }
+}
+
+.wb-char-fly {
+  display: inline-block;
+  opacity: 0;
+  transform-style: preserve-3d;
+  will-change: transform, opacity, filter;
+  animation: wbCharFlyIn 600ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.wb-char-fly-reverse {
+  display: inline-block;
+  opacity: 0;
+  transform-style: preserve-3d;
+  will-change: transform, opacity, filter;
+  animation: wbCharFlyInReverse 600ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.wb-char-type {
+  display: inline-block;
+  will-change: transform, opacity, filter;
+  animation: wbCharTypePop 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.wb-hero-caret {
+  display: inline-block;
+  width: 3px;
+  height: 0.84em;
+  margin-left: 4px;
+  border-radius: 2px;
+  vertical-align: -0.06em;
+  background-color: #34d399;
+  box-shadow: 0 0 14px rgba(52, 211, 153, 0.85);
+  animation: wbCaretBlink 720ms steps(2, start) infinite;
+}
+
+.wb-hero-caret-done {
+  animation: wbCaretBlink 460ms steps(2, start) 2, wbCaretFadeOut 650ms ease 920ms forwards;
+}
+
+html.light .wb-hero-caret {
+  background-color: #059669 !important;
+  box-shadow: 0 0 10px rgba(5, 150, 105, 0.45) !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .wb-word-inner,
-  .wb-stage-reveal {
+  .wb-stage-reveal,
+  .wb-char-fly,
+  .wb-char-fly-reverse,
+  .wb-char-type {
     opacity: 1 !important;
     transform: none !important;
     filter: none !important;
     animation: none !important;
+  }
+  .wb-hero-caret {
+    display: none !important;
   }
 }
 
@@ -506,6 +629,95 @@ html.light .wb-diff-add {
   color: #047857 !important;
 }
 
+/* ── IDE Security Workbench (Deterministic Output Section — Dark + Light) ── */
+.wb-ide-chrome {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+html.light .wb-ide-chrome {
+  background-color: #f8fafc !important;
+}
+
+.wb-ide-evidence {
+  background-color: rgba(255, 255, 255, 0.022);
+}
+html.light .wb-ide-evidence {
+  background-color: #f1f5f9 !important;
+}
+
+.wb-ide-gutter {
+  color: rgba(148, 163, 184, 0.42);
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+}
+html.light .wb-ide-gutter {
+  color: rgba(100, 116, 139, 0.65) !important;
+  border-right-color: #e4e4e7 !important;
+}
+
+.wb-ide-kbd {
+  background-color: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+}
+html.light .wb-ide-kbd {
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+  color: #475569 !important;
+}
+
+.wb-ide-token-del {
+  background-color: rgba(244, 63, 94, 0.24);
+  color: #ffe4e6;
+}
+.wb-ide-token-add {
+  background-color: rgba(16, 185, 129, 0.22);
+  color: #d1fae5;
+}
+html.light .wb-ide-token-del {
+  background-color: rgba(244, 63, 94, 0.18) !important;
+  color: #9f1239 !important;
+}
+html.light .wb-ide-token-add {
+  background-color: rgba(16, 185, 129, 0.18) !important;
+  color: #065f46 !important;
+}
+
+.wb-ide-row-active-critical {
+  background: linear-gradient(90deg, rgba(244, 63, 94, 0.09) 0%, rgba(255, 255, 255, 0.025) 100%);
+}
+.wb-ide-row-active-high {
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.09) 0%, rgba(255, 255, 255, 0.025) 100%);
+}
+.wb-ide-row-active-medium {
+  background: linear-gradient(90deg, rgba(6, 182, 212, 0.09) 0%, rgba(255, 255, 255, 0.025) 100%);
+}
+html.light .wb-ide-row-active-critical {
+  background: linear-gradient(90deg, rgba(244, 63, 94, 0.07) 0%, rgba(248, 250, 252, 0.9) 100%) !important;
+}
+html.light .wb-ide-row-active-high {
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.08) 0%, rgba(248, 250, 252, 0.9) 100%) !important;
+}
+html.light .wb-ide-row-active-medium {
+  background: linear-gradient(90deg, rgba(14, 165, 233, 0.08) 0%, rgba(248, 250, 252, 0.9) 100%) !important;
+}
+
+.wb-spec-code {
+  background-color: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: #cbd5e1;
+}
+html.light .wb-spec-code {
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+  color: #334155 !important;
+}
+
+.wb-spec-row:hover {
+  background-color: rgba(255, 255, 255, 0.025);
+}
+html.light .wb-spec-row:hover {
+  background-color: #f8fafc !important;
+}
+
 html.light .divide-white\/10 > :not([hidden]) ~ :not([hidden]),
 html.light .divide-white\/\[0\.08\] > :not([hidden]) ~ :not([hidden]) {
   border-color: #e4e4e7 !important;
@@ -554,37 +766,80 @@ html.light .wb-crosshair {
   color: rgba(9, 9, 11, 0.24) !important;
 }
 
-/* ── Optical Reticle Dropzone & Standby CTA (2-Pane Security IDE Workbench) ── */
+/* ── Emerald Reticle Upload Box (Dark + Light) ── */
 .wb-reticle-zone {
-  background-color: #090d0c;
-  background-image: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
-  background-size: 16px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background-color: #070b0a;
+  background-image: radial-gradient(
+    circle at 50% 42%,
+    rgba(16, 185, 129, 0.14) 0%,
+    rgba(16, 185, 129, 0.045) 46%,
+    rgba(7, 11, 10, 0.96) 100%
+  );
+  border: 1.5px dashed rgba(52, 211, 153, 0.24);
+}
+
+.wb-reticle-zone:hover,
+.wb-reticle-dragging {
+  border-color: rgba(52, 211, 153, 0.55);
+  background-image: radial-gradient(
+    circle at 50% 42%,
+    rgba(16, 185, 129, 0.2) 0%,
+    rgba(16, 185, 129, 0.065) 48%,
+    rgba(7, 11, 10, 0.96) 100%
+  );
 }
 
 html.light .wb-reticle-zone {
   background-color: #f8fafc !important;
-  background-image: radial-gradient(rgba(9, 9, 11, 0.08) 1px, transparent 1px) !important;
-  background-size: 16px 16px;
-  border-color: #e4e4e7 !important;
+  background-image: radial-gradient(
+    circle at 50% 42%,
+    rgba(16, 185, 129, 0.11) 0%,
+    rgba(16, 185, 129, 0.03) 50%,
+    rgba(248, 250, 252, 0.98) 100%
+  ) !important;
+  border: 1.5px dashed rgba(5, 150, 105, 0.28) !important;
+}
+
+html.light .wb-reticle-zone:hover,
+html.light .wb-reticle-dragging {
+  border-color: rgba(5, 150, 105, 0.6) !important;
 }
 
 .wb-reticle-corner {
   position: absolute;
-  width: 12px;
-  height: 12px;
-  border-color: rgba(255, 255, 255, 0.28);
-  transition: border-color 180ms ease;
+  width: 22px;
+  height: 22px;
+  border-color: rgba(52, 211, 153, 0.8);
+  transition: border-color 180ms ease, transform 180ms ease;
   pointer-events: none;
 }
 
 html.light .wb-reticle-corner {
-  border-color: rgba(9, 9, 11, 0.25) !important;
+  border-color: rgba(5, 150, 105, 0.78) !important;
 }
 
 .group:hover .wb-reticle-corner,
 .wb-reticle-dragging .wb-reticle-corner {
-  border-color: #10b981 !important;
+  border-color: #34d399 !important;
+}
+
+html.light .group:hover .wb-reticle-corner,
+html.light .wb-reticle-dragging .wb-reticle-corner {
+  border-color: #047857 !important;
+}
+
+.wb-upload-squircle {
+  background: rgba(16, 185, 129, 0.11);
+  border: 1px solid rgba(52, 211, 153, 0.34);
+  color: #34d399;
+  box-shadow: 0 0 28px rgba(16, 185, 129, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+html.light .wb-upload-squircle {
+  background: rgba(5, 150, 105, 0.09) !important;
+  border-color: rgba(5, 150, 105, 0.32) !important;
+  color: #059669 !important;
+  box-shadow: 0 8px 24px -8px rgba(5, 150, 105, 0.22) !important;
 }
 
 .wb-btn-standby {
@@ -909,14 +1164,73 @@ html[data-theme-transition="to-dark"]::view-transition-new(root) {
   }
 }
 
-/* Print optimization for Audit PDF Export */
+/* Print optimization for Executive Audit PDF Export */
 @media print {
   canvas, .no-print {
     display: none !important;
   }
-  body {
+  html, body {
     background: #ffffff !important;
-    color: #000000 !important;
+    color: #0f172a !important;
+    color-scheme: light !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .wb-bezel {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+  .wb-surface,
+  .glass-panel,
+  .glass-card {
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    box-shadow: none !important;
+  }
+  .wb-surface-muted,
+  .wb-ide-chrome,
+  .wb-ide-evidence,
+  .wb-spec-code {
+    background: #f8fafc !important;
+    border-color: #cbd5e1 !important;
+    box-shadow: none !important;
+  }
+  .text-white,
+  .text-slate-100,
+  .text-slate-200 {
+    color: #0f172a !important;
+  }
+  .text-slate-300 {
+    color: #1e293b !important;
+  }
+  .text-slate-400,
+  .text-slate-500 {
+    color: #475569 !important;
+  }
+  .text-emerald-300,
+  .text-emerald-400 {
+    color: #047857 !important;
+  }
+  .text-cyan-300,
+  .text-cyan-400 {
+    color: #0369a1 !important;
+  }
+  .text-amber-300,
+  .text-amber-400,
+  .text-orange-400 {
+    color: #b45309 !important;
+  }
+  .text-rose-300,
+  .text-rose-400 {
+    color: #be123c !important;
+  }
+  pre {
+    background: #f8fafc !important;
+    color: #0f172a !important;
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
   }
   * {
     overflow-wrap: anywhere !important;
@@ -935,9 +1249,5 @@ html[data-theme-transition="to-dark"]::view-transition-new(root) {
   .max-h-48 {
     max-height: none !important;
     overflow: visible !important;
-  }
-  pre {
-    white-space: pre-wrap !important;
-    word-break: break-word !important;
   }
 }

@@ -28,6 +28,7 @@ export interface StoredAccount {
   billingStatus?: 'active' | 'past_due' | 'on_hold' | 'paused' | 'cancelled' | 'expired' | 'failed';
   dodoCustomerId?: string | null;
   dodoSubscriptionId?: string | null;
+  ownerPlanOverridden?: boolean;
   dailyScansUsed: number;
   dailyScanDate: string; // YYYY-MM-DD
   monthlyPeriodKey?: string; // YYYY-MM
@@ -48,6 +49,7 @@ export interface PublicAccount {
   billingStatus?: 'active' | 'past_due' | 'on_hold' | 'paused' | 'cancelled' | 'expired' | 'failed';
   dodoCustomerId?: string | null;
   dodoSubscriptionId?: string | null;
+  isOwner?: boolean;
   dailyScansUsed: number;
   dailyScanLimit: number | null;
   scanQuotaPeriod: 'month' | 'day';
@@ -203,7 +205,33 @@ function writeGuestDb(db: GuestQuotaDbShape) {
   fs.renameSync(tmpPath, GUEST_DB_PATH);
 }
 
+const OWNER_ACCOUNT_EMAIL = 'sanjeetkumar803108@gmail.com';
+
+export function isOwnerAccountEmail(email?: string | null): boolean {
+  return String(email || '').trim().toLowerCase() === OWNER_ACCOUNT_EMAIL;
+}
+
+function ensureOwnerEntitlement(user: StoredAccount): boolean {
+  if (!isOwnerAccountEmail(user.email)) return false;
+  let changed = false;
+  if (!user.ownerPlanOverridden && user.plan !== 'agency') {
+    user.plan = 'agency';
+    changed = true;
+  }
+  if (user.billingStatus !== 'active') {
+    user.billingStatus = 'active';
+    changed = true;
+  }
+  if (!user.billingCycle) {
+    user.billingCycle = 'annual';
+    changed = true;
+  }
+  return changed;
+}
+
 export function toPublicAccount(user: StoredAccount): PublicAccount {
+  ensureOwnerEntitlement(user);
+  const isOwner = isOwnerAccountEmail(user.email);
   const policy = getPlanPolicy(user.plan);
   const monthKey = currentMonthKey();
   const dayKey = currentDayKey();
@@ -219,6 +247,7 @@ export function toPublicAccount(user: StoredAccount): PublicAccount {
     billingStatus: user.billingStatus,
     dodoCustomerId: user.dodoCustomerId ?? null,
     dodoSubscriptionId: user.dodoSubscriptionId ?? null,
+    isOwner,
     name: user.name,
     email: user.email,
     avatarUrl: user.avatarUrl,
@@ -338,7 +367,9 @@ export function registerAccount(
     name,
     email,
     passwordHash: hashPassword(password),
-    plan: 'free',
+    plan: isOwnerAccountEmail(email) ? 'agency' : 'free',
+    billingStatus: isOwnerAccountEmail(email) ? 'active' : undefined,
+    billingCycle: isOwnerAccountEmail(email) ? 'annual' : undefined,
     dailyScansUsed: 0,
     dailyScanDate: currentDayKey(),
     monthlyPeriodKey: currentMonthKey(),
@@ -366,7 +397,8 @@ export function authenticateAccount(
   if (!user || !verifyPassword(password, user.passwordHash)) {
     return { error: 'Invalid email or password.' };
   }
-  if (normalizeUserQuota(user)) {
+  const changed = normalizeUserQuota(user) || ensureOwnerEntitlement(user);
+  if (changed) {
     writeDb(db);
   }
   return { account: toPublicAccount(user) };
@@ -376,7 +408,8 @@ export function getAccountById(userId: string): PublicAccount | null {
   const db = readDb();
   const user = db.users.find((u) => u.id === userId);
   if (!user) return null;
-  if (normalizeUserQuota(user)) {
+  const changed = normalizeUserQuota(user) || ensureOwnerEntitlement(user);
+  if (changed) {
     writeDb(db);
   }
   return toPublicAccount(user);
@@ -411,7 +444,11 @@ export function getAccountPlanById(userId: string | null): AccountPlan {
   if (!userId) return 'free';
   const db = readDb();
   const user = db.users.find((u) => u.id === userId);
-  return user?.plan || 'free';
+  if (!user) return 'free';
+  if (ensureOwnerEntitlement(user)) {
+    writeDb(db);
+  }
+  return user.plan || 'free';
 }
 
 function evaluateAndConsumeBucket(
@@ -510,7 +547,27 @@ export function consumeScanTargetQuota(opts: {
     const db = readDb();
     const user = db.users.find((u) => u.id === opts.userId);
     if (user) {
+      ensureOwnerEntitlement(user);
       const policy = getPlanPolicy(user.plan);
+
+      // Owner account gets unlimited scans & re-scans without quota blocks
+      if (isOwnerAccountEmail(user.email)) {
+        normalizeUserQuota(user);
+        const targets = user.monthlyTargetCounts || (user.monthlyTargetCounts = {});
+        const existingCount = targets[targetKey] || 0;
+        targets[targetKey] = existingCount + 1;
+        user.dailyScansUsed += 1;
+        writeDb(db);
+        return {
+          allowed: true,
+          plan: user.plan,
+          isRescan: existingCount > 0,
+          monthlyAppsUsed: Object.keys(targets).length,
+          monthlyAppLimit: policy.monthlyUniqueTargets,
+          targetScanCount: targets[targetKey],
+        };
+      }
+
       const result = evaluateAndConsumeBucket(user, policy, targetKey, false);
       writeDb(db);
       return { ...result, plan: user.plan };
@@ -542,6 +599,11 @@ export function updateAccountPlan(userId: string, plan: AccountPlan): PublicAcco
   const user = db.users.find((u) => u.id === userId);
   if (!user) return null;
   user.plan = plan;
+  if (isOwnerAccountEmail(user.email)) {
+    user.ownerPlanOverridden = plan !== 'agency';
+    user.billingStatus = 'active';
+    user.billingCycle = user.billingCycle || 'annual';
+  }
   normalizeUserQuota(user);
   writeDb(db);
   return toPublicAccount(user);
@@ -661,6 +723,7 @@ export function upsertGoogleAccount(profile: {
 
   if (user) {
     normalizeUserQuota(user);
+    ensureOwnerEntitlement(user);
     if (profile.avatarUrl) user.avatarUrl = profile.avatarUrl;
     if (!user.authProvider) user.authProvider = 'google';
     writeDb(db);
@@ -674,7 +737,9 @@ export function upsertGoogleAccount(profile: {
     passwordHash: 'google-oauth',
     avatarUrl: profile.avatarUrl,
     authProvider: 'google',
-    plan: 'free',
+    plan: isOwnerAccountEmail(email) ? 'agency' : 'free',
+    billingStatus: isOwnerAccountEmail(email) ? 'active' : undefined,
+    billingCycle: isOwnerAccountEmail(email) ? 'annual' : undefined,
     dailyScansUsed: 0,
     dailyScanDate: currentDayKey(),
     monthlyPeriodKey: currentMonthKey(),

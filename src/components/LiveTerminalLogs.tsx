@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Terminal, Shield } from 'lucide-react';
 
 interface TerminalProps {
@@ -31,6 +31,7 @@ const APK_LOG_MESSAGES = [
 
 export const LiveTerminalLogs: React.FC<TerminalProps> = ({ targetUrl, isApkMode = false }) => {
   const [logs, setLogs] = useState<string[]>([]);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const activeMessages = isApkMode ? APK_LOG_MESSAGES : WEB_LOG_MESSAGES;
 
   useEffect(() => {
@@ -39,9 +40,11 @@ export const LiveTerminalLogs: React.FC<TerminalProps> = ({ targetUrl, isApkMode
 
     const interval = setInterval(() => {
       if (index < activeMessages.length) {
-        const timestamp = String(index + 1).padStart(2, '0');
-        setLogs(prev => [...prev, `[00:${timestamp}s] ${activeMessages[index]}`]);
+        const currentIdx = index;
+        const msg = activeMessages[currentIdx];
+        const timestamp = String(currentIdx + 1).padStart(2, '0');
         index++;
+        setLogs((prev) => [...prev, `[00:${timestamp}s] ${msg}`]);
       } else {
         clearInterval(interval);
       }
@@ -49,6 +52,12 @@ export const LiveTerminalLogs: React.FC<TerminalProps> = ({ targetUrl, isApkMode
 
     return () => clearInterval(interval);
   }, [targetUrl, isApkMode]);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [logs]);
 
   return (
     <div className="glass-panel rounded-2xl overflow-hidden font-mono text-xs shadow-2xl border border-white/10 w-full">
@@ -66,7 +75,10 @@ export const LiveTerminalLogs: React.FC<TerminalProps> = ({ targetUrl, isApkMode
         </div>
       </div>
 
-      <div className="p-4 space-y-2 text-slate-300 max-h-60 overflow-y-auto bg-[#050811]/90">
+      <div
+        ref={scrollContainerRef}
+        className="p-4 space-y-2 text-slate-300 h-52 sm:h-56 overflow-y-auto scroll-smooth bg-[#050811]/90"
+      >
         {logs.map((log, i) => (
           <div key={i} className="flex items-start gap-2.5 leading-relaxed">
             <span className={isApkMode ? 'text-purple-400 select-none font-bold' : 'text-cyan-400 select-none font-bold'}>
