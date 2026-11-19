@@ -11,6 +11,32 @@
     <title>CheckMyAPK — Free Android APK Decompiler &amp; Website Vulnerability Scanner</title>
 
     <meta name="description" content="Zero-install OWASP MASVS Android APK decompiler, secret scanner, and live website &amp; API vulnerability scanner. Detect leaked API keys, TLS/CORS misconfigurations, and debug backdoors in seconds." />
+    <meta name="keywords" content="apk decompiler online, android security scanner, owasp masvs audit, website vulnerability scanner, api key leak detector, cors security test, reverse engineering android, static code analysis" />
+    <meta name="author" content="CheckMyAPK" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://checkmyapk.com/" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://checkmyapk.com/" />
+    <meta property="og:site_name" content="CheckMyAPK" />
+    <meta property="og:title" content="CheckMyAPK — Free Android APK Decompiler &amp; Website Vulnerability Scanner" />
+    <meta property="og:description" content="Zero-install OWASP MASVS Android APK decompiler, secret scanner, and live website &amp; API vulnerability scanner. Detect leaked API keys, TLS/CORS misconfigurations, and debug backdoors in seconds." />
+    <meta property="og:image" content="https://checkmyapk.com/og-image.svg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="CheckMyAPK Security Workbench &amp; Vulnerability Scanner" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@checkmyapk" />
+    <meta name="twitter:creator" content="@checkmyapk" />
+    <meta name="twitter:title" content="CheckMyAPK — Free Android APK Decompiler &amp; Website Vulnerability Scanner" />
+    <meta name="twitter:description" content="Zero-install OWASP MASVS Android APK decompiler, secret scanner, and live website &amp; API vulnerability scanner. Detect leaked API keys, TLS/CORS misconfigurations, and debug backdoors in seconds." />
+    <meta name="twitter:image" content="https://checkmyapk.com/og-image.svg" />
 
     <!-- Google Analytics 4 -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-VKYQY0LL1B"></script>
@@ -22,8 +48,100 @@
     </script>
     <!-- End Google Analytics -->
 
+    <!-- Structured Data: SoftwareApplication & WebSite Schema -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          "@id": "https://checkmyapk.com/#website",
+          "url": "https://checkmyapk.com/",
+          "name": "CheckMyAPK",
+          "description": "Free Android APK Decompiler & Website Vulnerability Scanner",
+          "publisher": {
+            "@type": "Organization",
+            "name": "CheckMyAPK",
+            "url": "https://checkmyapk.com",
+            "logo": {
+              "@type": "ImageObject",
+              "url": "https://checkmyapk.com/og-image.svg"
+            }
+          }
+        },
+        {
+          "@type": "SoftwareApplication",
+          "@id": "https://checkmyapk.com/#application",
+          "name": "CheckMyAPK Security Workbench",
+          "applicationCategory": "SecurityApplication",
+          "operatingSystem": "All",
+          "url": "https://checkmyapk.com/",
+          "description": "Zero-install automated OWASP MASVS v2 static Dalvik bytecode disassembly, secret hunter, and dynamic website vulnerability scanner.",
+          "offers": [
+            {
+              "@type": "Offer",
+              "name": "Starter",
+              "price": "0",
+              "priceCurrency": "USD"
+            },
+            {
+              "@type": "Offer",
+              "name": "Pro Security",
+              "price": "15",
+              "priceCurrency": "USD"
+            },
+            {
+              "@type": "Offer",
+              "name": "Team & Agency",
+              "price": "79",
+              "priceCurrency": "USD"
+            }
+          ]
+        },
+        {
+          "@type": "FAQPage",
+          "@id": "https://checkmyapk.com/#faq",
+          "mainEntity": [
+            {
+              "@type": "Question",
+              "name": "Are uploaded .apk files saved on your servers?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "No. Uploaded APK binaries stay strictly inside volatile server memory buffers during the audit and are discarded immediately once your JSON/PDF report is generated."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "What do Confirmed vs Heuristic / Tentative tags mean?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Findings verified through deterministic binary parsing or live HTTP probes carry higher confidence, while pattern-matched discoveries are tagged so engineers can verify runtime protections without false alarm fatigue."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Why does Domain Ownership verification unlock a 15-request burst?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Unverified public domains receive a gentle 4-request rate probe so our scanner never overwhelms third-party sites. Verifying DNS TXT or HTML Meta ownership proves authorization for the full 15-request burst test."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Can I export results for Play Store or GitHub PR reviews?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. Every completed audit includes Print-to-PDF formatting, structured JSON telemetry, downloadable Markdown, and a Copy PR Summary button for Slack or GitHub Pull Requests."
+              }
+            }
+          ]
+        }
+      ]
+    }
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 
     <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,700;1,800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
 

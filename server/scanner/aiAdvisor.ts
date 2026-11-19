@@ -32,7 +32,8 @@ async function generateWithFastTimeout(
     return null;
   }
 
-  const models = ['gemini-3.8-flash'];
+  const models = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash'];
+  let sawQuotaExhausted = false;
   for (const modelName of models) {
     try {
       const response = await Promise.race([
@@ -52,14 +53,18 @@ async function generateWithFastTimeout(
       }
     } catch (err: any) {
       const msg = String(err?.message || err);
-      if (apiKey && (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED'))) {
-        cooldownKey = apiKey;
-        geminiCooldownUntil = Date.now() + 60_000;
-        console.warn(`[AI Advisor] ${modelName} quota exhausted (429); activating 60s deterministic fallback mode.`);
+      if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
+        sawQuotaExhausted = true;
+        console.warn(`[AI Advisor] ${modelName} quota exhausted (429); trying fallback model...`);
       } else {
         console.warn(`[AI Advisor] ${modelName} skipped:`, msg.slice(0, 220));
       }
     }
+  }
+  if (apiKey && sawQuotaExhausted) {
+    cooldownKey = apiKey;
+    geminiCooldownUntil = Date.now() + 60_000;
+    console.warn(`[AI Advisor] All Gemini models hit quota limits (429); activating 60s deterministic fallback mode.`);
   }
   return null;
 }
@@ -159,14 +164,14 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
   if (isFirebaseClientKey) {
     const isApkTarget = techStack.toLowerCase().includes('android') || techStack.toLowerCase().includes('capacitor');
     return {
-      simpleExplanation: `Yeh warning "${t}" dikhati hai ki aapke ${isApkTarget ? 'Android/Capacitor APK' : 'frontend bundle'} me Firebase Client API Key (${finding.proof || 'AIza...'}) maujood hai. Firebase Auth ke liye client key public rehna normal hai, lekin agar Google Cloud Console me ispar API restrictions na hon toh koi bhi is key se paid Gemini/GCP APIs use kar sakta hai.`,
-      dangerScenario: 'Attacker JS bundle ya APK assets se AIza... key nikaal kar Google Generative Language API ya unconstrained GCP quotas par aapke billing account se requests chala sakta hai.',
+      simpleExplanation: `• This warning (${t}) indicates that a Firebase Client API Key (${finding.proof || 'AIza...'}) is embedded in your ${isApkTarget ? 'Android/Capacitor APK' : 'frontend bundle'}.\n• While Firebase client keys are intentionally public for Authentication, leaving them unrestricted in Google Cloud Console exposes paid GCP and Gemini quotas.`,
+      dangerScenario: `• An attacker can extract the AIza... key from your ${isApkTarget ? 'APK assets' : 'JS bundle'} within seconds.\n• If Generative Language or other APIs are enabled without application restrictions, the attacker can run requests billed directly to your Google Cloud account.`,
       steps: [
-        'Step 1: Google Cloud Console -> APIs & Services -> Credentials open karein aur is API Key par click karein.',
+        'Open Google Cloud Console -> APIs & Services -> Credentials and select this API key.',
         isApkTarget
-          ? 'Step 2: Application restrictions me "Android apps" select karke apna Package Name + SHA-1 fingerprint add karein.'
-          : 'Step 2: Application restrictions me "Websites (HTTP referrers)" me sirf apna production domain (e.g. https://yourdomain.com/*) whitelist karein.',
-        'Step 3: API restrictions me sirf Firebase / Identity Toolkit APIs allow karein aur Generative Language (Gemini) API ko uncheck rakhein.'
+          ? 'Under Application restrictions, select "Android apps" and add your Package Name + Release SHA-1 fingerprint.'
+          : 'Under Application restrictions, select "Websites (HTTP referrers)" and allow only your production domain (e.g., https://yourdomain.com/*).',
+        'Under API restrictions, permit only Firebase / Identity Toolkit APIs and ensure Generative Language (Gemini) API is unchecked.'
       ],
       codeBlock: {
         filename: 'Google Cloud Console -> API Key Restrictions (Checklist)',
@@ -185,60 +190,60 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
     let language = 'xml';
     let beforeCode = `<application\n    android:debuggable="true"\n    android:allowBackup="true"\n    android:usesCleartextTraffic="true" />`;
     let code = `<!-- Update AndroidManifest.xml / build.gradle -->\n<application\n    android:debuggable="false"\n    android:allowBackup="false"\n    android:usesCleartextTraffic="false" />`;
-    let explanation = `Yeh mobile vulnerability "${t}" aapke Android APK configuration ya compiled bytecode me kamzori dikhati hai (${finding.proof || 'Manifest/DEX check'}).`;
-    let danger = finding.description || 'Malicious apps ya attackers device ya network par is weakness ka galat fayda utha sakte hain.';
+    let explanation = `• This mobile finding (${t}) indicates a security weakness in your Android APK configuration or compiled bytecode.\n• Evidence detected: ${finding.proof || 'Manifest/DEX check'}.`;
+    let danger = `• ${finding.description || 'Malicious apps or network attackers can exploit this configuration to intercept traffic or access app internals.'}\n• Left unpatched, this increases reverse-engineering and data-exposure risk on end-user devices.`;
     let steps = [
-      `Step 1: Apne Android project me ${filename} open karein.`,
-      'Step 2: Neeche diya production-hardened configuration apply karein aur clean release build compile karein.',
-      'Step 3: Naya .apk file CheckMyAPK.com par dobara upload karke score improvement verify karein.'
+      `Open ${filename} in your Android project.`,
+      'Apply the production-hardened configuration below and compile a clean release build.',
+      'Re-upload the signed release .apk to CheckMyAPK.com to verify the score improvement.'
     ];
 
     if (t.includes('WebView') || t.includes('capacitor')) {
       filename = 'capacitor.config.ts (or capacitor.config.json)';
       language = 'json';
       beforeCode = `{\n  "server": { "cleartext": true },\n  "android": { "allowMixedContent": true, "webContentsDebuggingEnabled": true }\n}`;
-      explanation = `Aapke Capacitor/Hybrid APK config me "${t}" detect hua hai (${finding.proof || 'cleartext=true'}). Jab server.cleartext true hota hai toh Capacitor CLI sync ke waqt plugins manifest me android:usesCleartextTraffic="true" inject karta hai aur unencrypted HTTP traffic allow ho sakta hai.`;
-      danger = 'Public Wi-Fi, hotspot, ya compromised router par baitha attacker Man-in-the-Middle (MitM) attack karke plain HTTP network traffic sniff kar sakta hai ya WebView me malicious JavaScript inject kar sakta hai.';
+      explanation = `• Your Capacitor/Hybrid APK configuration enables "${t}" (${finding.proof || 'cleartext=true'}).\n• When server.cleartext is true, Capacitor injects android:usesCleartextTraffic="true" during sync and allows unencrypted HTTP traffic.`;
+      danger = `• An attacker on public Wi-Fi, a hotspot, or a compromised router can perform a Man-in-the-Middle (MitM) attack.\n• Plaintext HTTP traffic can be sniffed or modified to inject malicious JavaScript into the WebView.`;
       steps = [
-        'Step 1: Apne root project me capacitor.config.ts (ya capacitor.config.json) open karein — existing appId, appName, webDir aur plugins ko DELETE na karein.',
-        'Step 2: Sirf server.cleartext ko false aur android security flags ko niche dikhaye anusaar merge/update karein.',
-        'Step 3: "npm run build && npx cap sync android" chalayein taaki plugins manifest se usesCleartextTraffic="true" hat jaye, phir release APK dubara build karein.'
+        'Open capacitor.config.ts (or capacitor.config.json) in your project root — keep your existing appId, appName, webDir, and plugins intact.',
+        'Set server.cleartext to false and update the android security flags as shown below.',
+        'Run "npm run build && npx cap sync android" to remove usesCleartextTraffic="true" from the merged manifest, then rebuild the release APK.'
       ];
       code = `// Merge into your EXISTING capacitor.config.ts / .json (keep appId, webDir & plugins!)\n{\n  "server": {\n    "cleartext": false,\n    "androidScheme": "https"\n  },\n  "android": {\n    "allowMixedContent": false,\n    "webContentsDebuggingEnabled": false\n  }\n}`;
     } else if (t.includes('Certificate Pinning')) {
       filename = 'res/xml/network_security_config.xml';
-      explanation = `App me SSL/TLS Certificate Pinning active nahi dikh rahi hai (${finding.proof || 'no pin-set / CertificatePinner'}).`;
+      explanation = `• SSL/TLS Certificate Pinning is not enforced in the application (${finding.proof || 'no pin-set / CertificatePinner'}).\n• Without pinning, any trusted or rogue root CA installed on the device can intercept HTTPS requests.`;
       code = `<domain-config cleartextTrafficPermitted="false">\n  <domain includeSubdomains="true">api.yourapp.com</domain>\n  <pin-set expiration="2027-12-31">\n    <pin digest="SHA-256">PRIMARY_SPKI_BASE64_HASH=</pin>\n    <pin digest="SHA-256">BACKUP_SPKI_BASE64_HASH=</pin>\n  </pin-set>\n</domain-config>`;
     } else if (t.includes('Cleartext') || t.includes('CA Certificates') || t.includes('network_security_config') || t.includes('SSL')) {
       filename = 'res/xml/network_security_config.xml';
-      explanation = `Network transport flaw "${t}" (${finding.proof || 'TLS/Cleartext config'}) aapke app ke HTTPS/TLS guarantees ko kamzor karta hai.`;
-      danger = 'Public Wi-Fi par Man-in-the-Middle (MitM) attacker network packets intercept karke user session tokens, API responses, ya credentials padh/badal sakta hai.';
+      explanation = `• The network transport issue "${t}" (${finding.proof || 'TLS/Cleartext config'}) weakens HTTPS/TLS guarantees in your app.\n• Unencrypted traffic or user-trusted CAs allow interception of sensitive API payloads.`;
+      danger = `• A Man-in-the-Middle (MitM) attacker on public Wi-Fi can intercept or alter session tokens, API responses, and user credentials in transit.\n• User-installed proxy CAs can decrypt HTTPS traffic without triggering SSL errors.`;
     } else if (t.includes('Exported')) {
       filename = 'AndroidManifest.xml';
-      explanation = `IPC exposure "${t}" (${finding.proof || 'exported=true'}) bina permission guard ke internal components ko bahar expose karta hai.`;
+      explanation = `• The IPC exposure "${t}" (${finding.proof || 'exported=true'}) exposes internal Android components without a permission guard.\n• Third-party apps on the same device can invoke these components directly.`;
       steps = [
-        'Step 1: AndroidManifest.xml me flagged Activity/Service/Receiver/Provider dhoondhein.',
-        'Step 2: Internal components par android:exported="false" ya signature-level android:permission lagayein.',
-        'Step 3: Release APK recompile karke CheckMyAPK.com par dubara scan karein.'
+        'Locate the flagged Activity, Service, Receiver, or Provider in AndroidManifest.xml.',
+        'Set android:exported="false" on internal components, or require a signature-level android:permission.',
+        'Rebuild the release APK and re-scan it on CheckMyAPK.com to confirm resolution.'
       ];
       code = `<service android:name=".InternalService" android:exported="false" />\n<receiver android:name=".InternalReceiver" android:exported="false" />`;
     } else if (t.includes('Encryption')) {
       filename = 'CryptoHelper.kt';
       language = 'kotlin';
-      explanation = `Weak cryptographic algorithm "${t}" (${finding.proof || 'AES/ECB or DES'}) bytecode me paya gaya hai, jisse encrypted data patterns leak ho sakte hain.`;
+      explanation = `• A weak symmetric cipher mode "${t}" (${finding.proof || 'AES/ECB or DES'}) was detected in compiled bytecode.\n• Deterministic ECB blocks or legacy DES ciphers can leak plaintext patterns.`;
       code = `val cipher = Cipher.getInstance("AES/GCM/NoPadding")\nval iv = ByteArray(12).also { SecureRandom().nextBytes(it) }\ncipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(128, iv))`;
     } else if (t.includes('Obfuscation')) {
       filename = 'android/app/build.gradle';
       language = 'groovy';
-      explanation = `Release binary me ProGuard/R8 obfuscation missing dikh raha hai (${finding.proof || 'unminified classes'}), jisse JADX-GUI me code seedhe readable milta hai.`;
+      explanation = `• ProGuard/R8 code obfuscation appears disabled in the release binary (${finding.proof || 'unminified classes'}).\n• Decompiling the APK with JADX-GUI exposes readable class, method, and variable names.`;
       code = `buildTypes {\n  release {\n    minifyEnabled true\n    shrinkResources true\n    proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'\n  }\n}`;
     } else if (t.includes('Native Library') || t.includes('Native ELF')) {
       filename = 'app/src/main/cpp/CMakeLists.txt';
       language = 'cmake';
-      explanation = `Compiled C/C++ native shared library (.so) me binary hardening flags missing mile hain (${finding.proof || 'PIE/NX/RELRO/Canary'}).`;
+      explanation = `• Compiled C/C++ native shared libraries (.so) are missing binary hardening flags (${finding.proof || 'PIE/NX/RELRO/Canary'}).\n• Missing exploit mitigations make memory-corruption bugs easier to weaponize.`;
       code = `set(CMAKE_C_FLAGS "\${CMAKE_C_FLAGS} -fstack-protector-strong -fPIE -D_FORTIFY_SOURCE=2")\nset(CMAKE_CXX_FLAGS "\${CMAKE_CXX_FLAGS} -fstack-protector-strong -fPIE -D_FORTIFY_SOURCE=2")\nset(CMAKE_SHARED_LINKER_FLAGS "\${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,noexecstack -Wl,-z,relro,-z,now")`;
     } else if (t.includes('Secret') || t.includes('resources.arsc')) {
-      explanation = `Compiled APK ke andar sensitive secret (${finding.proof || 'DEX/resources.arsc'}) mila hai jise JADX-GUI ya apktool se seconds me extract kiya ja sakta hai.`;
+      explanation = `• A sensitive secret (${finding.proof || 'DEX/resources.arsc'}) is embedded inside the compiled APK.\n• Attackers can extract hardcoded strings from APK archives in seconds using JADX-GUI or apktool.`;
     }
 
     return {
@@ -342,12 +347,12 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
   }
 
   return {
-    simpleExplanation: `Yeh web vulnerability "${t}" aapke ${techStack} application server response ya frontend bundle me detect hui hai (${finding.proof || 'HTTP probe'}).`,
-    dangerScenario: finding.description || 'Attackers missing defense headers, leaked files, ya permissive policies ka fayda utha kar XSS, clickjacking, ya credential theft kar sakte hain.',
+    simpleExplanation: `• This web vulnerability (${t}) was detected in your ${techStack} server response or frontend bundle.\n• Evidence detected: ${finding.proof || 'HTTP probe'}.`,
+    dangerScenario: `• ${finding.description || 'Attackers can exploit missing security headers, leaked files, or permissive policies to perform XSS, clickjacking, or credential theft.'}\n• Unpatched exposure increases the risk of automated scraping and client-side session hijacking.`,
     steps: [
-      `Step 1: Apne project (${techStack}) me ${webFilename} open karein.`,
-      'Step 2: Neeche diya hardened snippet apply karein (aur agar koi key/file leak hui hai toh secret rotate karein).',
-      'Step 3: Production deploy karein aur CheckMyAPK.com ya verify command se re-test karein.'
+      `Open ${webFilename} in your ${techStack} project.`,
+      'Apply the hardened configuration snippet shown below (and rotate any leaked API keys or secrets immediately).',
+      'Deploy to production and verify with CheckMyAPK.com or the verification command below.'
     ],
     beforeCode: webBefore,
     codeBlock: { filename: webFilename, language: webLang, code: webCode },
@@ -438,7 +443,7 @@ export async function generateVulnerabilityDeepFix(
     return buildDeterministicDeepFix(finding, techStack, targetUrl);
   }
 
-  const cacheKey = getCacheKey('fix', { type: finding.type, techStack, targetUrl });
+  const cacheKey = getCacheKey('fix', { type: finding.type, proof: finding.proof || '', techStack, targetUrl });
   try {
     const ai = new GoogleGenAI({ apiKey });
     const prompt = `You are an elite Cybersecurity Engineer and DevSecOps mentor helping a developer fix a security vulnerability.
@@ -449,15 +454,15 @@ Severity: ${finding.severity}
 Finding Proof / Trigger: ${finding.proof || 'N/A'}
 Description: ${finding.description || 'N/A'}
 
-Explain this in crystal-clear, developer-friendly language (Hinglish/English mix that Indian developers love, simple and practical).
+IMPORTANT: Respond strictly in clear, professional English (no Hinglish or non-English words). Format explanations cleanly point-wise.
 Your response MUST be strict valid JSON matching this schema:
 {
-  "simpleExplanation": "2-3 sentences in simple Hinglish explaining what this flaw actually is and why it happened.",
-  "dangerScenario": "2-3 sentences explaining exactly how a hacker or malicious user can exploit this weakness in real life.",
+  "simpleExplanation": "2-3 concise bullet points separated by \\n (each starting with '• ') explaining what this flaw is and why it occurred.",
+  "dangerScenario": "2-3 concise bullet points separated by \\n (each starting with '• ') explaining exactly how an attacker can exploit this weakness in practice.",
   "steps": [
-    "Step 1: Open [exact file, e.g. vercel.json, next.config.js, AndroidManifest.xml, or server.ts]",
-    "Step 2: Add or replace the code shown below",
-    "Step 3: Deploy/build the updated app and verify"
+    "Open [exact file, e.g. vercel.json, next.config.js, AndroidManifest.xml, or server.ts].",
+    "Add or replace the configuration/code shown below.",
+    "Deploy or rebuild the updated application and run the verification command."
   ],
   "beforeCode": "Short 1-4 line example of the insecure/vulnerable pattern before the fix.",
   "codeBlock": {

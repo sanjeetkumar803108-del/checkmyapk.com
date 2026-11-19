@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Terminal, Shield } from 'lucide-react';
+import { Terminal, Check } from 'lucide-react';
 
 interface TerminalProps {
   targetUrl: string;
   isApkMode?: boolean;
 }
+
+const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const WEB_LOG_MESSAGES = [
   'Initializing CheckMyAPK automated penetration suite...',
@@ -14,8 +16,8 @@ const WEB_LOG_MESSAGES = [
   'Running deep Regex Secret Hunter & Static DOM XSS Sink Analysis...',
   'Auditing JWT claims, Content-Security-Policy, HSTS & CORS headers...',
   'Testing Firebase / Supabase rules & passive API route error leaks...',
-  'Firing 15-request burst to test Denial-of-Wallet rate limits...',
-  'Synthesizing architectural risk assessment & computing score...'
+  'Firing burst probe to test Denial-of-Wallet rate limits...',
+  'Synthesizing architectural risk assessment & computing score...',
 ];
 
 const APK_LOG_MESSAGES = [
@@ -25,14 +27,26 @@ const APK_LOG_MESSAGES = [
   'Deep-scanning classes*.dex bytecode for secrets, weak crypto & SSL bypass...',
   'Fingerprinting embedded 3rd-party Trackers & telemetry SDKs...',
   'Extracting hardcoded Backend APIs & Firebase/Supabase endpoints...',
-  'Stage 3 Active Probe: Testing extracted Backend API headers & DB rules...',
-  'Computing OWASP MASVS mobile compliance score & neural brief...'
+  'Active Probe: Testing extracted Backend API headers & DB rules...',
+  'Computing OWASP MASVS mobile compliance score & neural brief...',
 ];
 
 export const LiveTerminalLogs: React.FC<TerminalProps> = ({ targetUrl, isApkMode = false }) => {
   const [logs, setLogs] = useState<string[]>([]);
+  const [brailleIdx, setBrailleIdx] = useState(0);
+  const [elapsedMs, setElapsedMs] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const activeMessages = isApkMode ? APK_LOG_MESSAGES : WEB_LOG_MESSAGES;
+
+  useEffect(() => {
+    const start = Date.now();
+    setElapsedMs(0);
+    const brailleTimer = setInterval(() => {
+      setBrailleIdx((prev) => (prev + 1) % BRAILLE_FRAMES.length);
+      setElapsedMs(Date.now() - start);
+    }, 85);
+    return () => clearInterval(brailleTimer);
+  }, [targetUrl, isApkMode]);
 
   useEffect(() => {
     setLogs([`[00:00s] Target locked: ${targetUrl}`]);
@@ -60,44 +74,84 @@ export const LiveTerminalLogs: React.FC<TerminalProps> = ({ targetUrl, isApkMode
   }, [logs]);
 
   return (
-    <div className="glass-panel rounded-2xl overflow-hidden font-mono text-xs shadow-2xl border border-white/10 w-full">
-      <div className="bg-[#0b101d]/90 px-4 py-2.5 border-b border-white/10 flex items-center justify-between">
+    <div className="wb-surface rounded-xl overflow-hidden font-mono text-xs w-full relative">
+      {/* Traveling Top-Border Laser Beam */}
+      <div aria-hidden="true" className="wb-top-beam" />
+
+      <div className="wb-ide-chrome px-4 py-2.5 border-b border-white/10 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Terminal className={`w-3.5 h-3.5 ${isApkMode ? 'text-purple-400' : 'text-cyan-400'}`} />
-          <span className="text-[11px] font-bold text-slate-200 tracking-wide">
-            {isApkMode ? 'CheckMyAPK • Dalvik Decompiler Shell' : 'CheckMyAPK • Active Pentest Engine'}
+          <Terminal className={`w-3.5 h-3.5 ${isApkMode ? 'text-emerald-400' : 'text-cyan-400'}`} />
+          <span className="text-[11px] font-semibold text-white tracking-tight">
+            {isApkMode ? 'CheckMyAPK · Dalvik Bytecode Shell' : 'CheckMyAPK · Live DAST Engine'}
           </span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-rose-500/80 inline-block"></span>
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-500/80 inline-block"></span>
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/80 inline-block animate-pulse"></span>
+        <div className="flex items-center gap-2.5" aria-hidden="true">
+          <span className="text-[10px] font-mono tabular-nums text-emerald-400/90 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">
+            {(elapsedMs / 1000).toFixed(1)}s
+          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500/60 border border-rose-400/30 inline-block" />
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400/60 border border-amber-300/30 inline-block" />
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400/80 border border-emerald-300/30 inline-block animate-pulse" />
+          </div>
         </div>
       </div>
 
       <div
         ref={scrollContainerRef}
-        className="p-4 space-y-2 text-slate-300 h-52 sm:h-56 overflow-y-auto scroll-smooth bg-[#050811]/90"
+        className="p-4 space-y-2 text-slate-300 h-52 sm:h-56 overflow-y-auto scroll-smooth wb-surface-muted border-0"
       >
-        {logs.map((log, i) => (
-          <div key={i} className="flex items-start gap-2.5 leading-relaxed">
-            <span className={isApkMode ? 'text-purple-400 select-none font-bold' : 'text-cyan-400 select-none font-bold'}>
-              ❯
+        {logs.map((log, i) => {
+          const isLast = i === logs.length - 1;
+          return (
+            <div key={i} className="flex items-start gap-2.5 leading-relaxed">
+              {isLast ? (
+                <span
+                  className={
+                    isApkMode
+                      ? 'text-emerald-400 select-none font-bold'
+                      : 'text-cyan-400 select-none font-bold'
+                  }
+                >
+                  ❯
+                </span>
+              ) : (
+                <Check className="w-3.5 h-3.5 text-emerald-500/80 mt-0.5 shrink-0" />
+              )}
+              <span
+                className={
+                  isLast
+                    ? `${isApkMode ? 'text-emerald-400' : 'text-cyan-400'} font-semibold`
+                    : 'text-slate-400'
+                }
+              >
+                {log}
+                {isLast && (
+                  <span
+                    aria-hidden="true"
+                    className={`wb-cursor-blink inline-block w-1.5 h-3.5 align-middle ml-1.5 ${
+                      isApkMode ? 'bg-emerald-400' : 'bg-cyan-400'
+                    }`}
+                  />
+                )}
+              </span>
+            </div>
+          );
+        })}
+        <div className="flex items-center justify-between gap-2 text-slate-400 pt-2 border-t border-white/5 mt-2">
+          <div className="flex items-center gap-2">
+            <span className="text-emerald-400 font-bold text-sm leading-none w-3.5 text-center select-none">
+              {BRAILLE_FRAMES[brailleIdx]}
             </span>
-            <span
-              className={
-                i === logs.length - 1
-                  ? `${isApkMode ? 'text-purple-300' : 'text-cyan-300'} font-semibold`
-                  : 'text-slate-400'
-              }
-            >
-              {log}
+            <span className="text-[10px] tracking-[0.14em] uppercase text-slate-400">
+              {isApkMode
+                ? 'Disassembling Dalvik DEX & Native ELF...'
+                : 'Executing deterministic payload probes...'}
             </span>
           </div>
-        ))}
-        <div className="flex items-center gap-2 text-slate-500 pt-1">
-          <Shield className="w-3 h-3 animate-spin" />
-          <span className="text-[10px] tracking-widest uppercase">Executing live payload probes...</span>
+          <span className="text-[10px] font-mono text-slate-500 hidden sm:inline">
+            LIVE TELEMETRY
+          </span>
         </div>
       </div>
     </div>

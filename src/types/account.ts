@@ -8,6 +8,7 @@ export interface SavedScanEntry {
   grade: string;
   criticalCount: number;
   timestamp: string;
+  hasReport?: boolean;
 }
 
 export interface TrackedTargetUsage {

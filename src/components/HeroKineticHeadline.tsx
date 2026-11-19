@@ -112,7 +112,7 @@ interface HeroRulesCountUpProps {
 }
 
 export const HeroRulesCountUp: React.FC<HeroRulesCountUpProps> = ({
-  target = 35,
+  target = 45,
   startDelayMs = 1580,
   durationMs = 1150,
   introDone,
@@ -143,7 +143,7 @@ export const HeroRulesCountUp: React.FC<HeroRulesCountUpProps> = ({
       const tick = (now: number) => {
         const elapsed = now - startTime;
         const progress = Math.min(1, elapsed / durationMs);
-        // Smooth ease-out cubic deceleration (fast start, crisp landing on 35)
+        // Smooth ease-out cubic deceleration (fast start, crisp landing on 45)
         const eased = 1 - Math.pow(1 - progress, 3);
         const nextVal = Math.round(eased * target);
         setCount(nextVal);

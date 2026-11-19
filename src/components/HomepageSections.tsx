@@ -548,81 +548,96 @@ export const HomepageSections: React.FC<HomepageSectionsProps> = ({
 
       {/* ── Minimal Hairline Security FAQ ── */}
       <section id="faq" className="scroll-mt-20 space-y-5">
-        <div className="space-y-1 text-left">
-          <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-400 font-semibold">
+        <div className="space-y-1.5 text-left">
+          <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-emerald-400 font-semibold">
             FAQ
           </span>
-          <h2 className="text-xl sm:text-2xl font-display font-semibold tracking-[-0.03em] text-white">
-            Security &amp; workflow questions
+          <h2 className="text-2xl sm:text-[28px] font-display font-semibold tracking-[-0.035em] leading-[1.15]">
+            <span className="text-white">Security &amp; workflow</span>{' '}
+            <span className="wb-headline-muted">questions answered.</span>
           </h2>
         </div>
 
-        <div className="border-y border-white/10 divide-y divide-white/10 text-left">
-          {FAQ_ITEMS.map((item, idx) => {
-            const isOpen = openFaq === idx;
-            return (
-              <div key={item.q}>
-                <button
-                  type="button"
-                  onClick={() => setOpenFaq(isOpen ? null : idx)}
-                  className="w-full py-4 flex items-center justify-between gap-4 text-left cursor-pointer group"
-                >
-                  <span className="text-xs sm:text-sm font-semibold text-white group-hover:text-emerald-400 transition-colors">
-                    {item.q}
-                  </span>
-                  <ChevronDown
-                    className={`w-4 h-4 text-slate-400 shrink-0 transition-transform duration-200 ${
-                      isOpen ? 'rotate-180 text-emerald-400' : ''
-                    }`}
-                  />
-                </button>
-                {isOpen && (
-                  <div className="pb-4 pr-8 text-xs text-slate-400 leading-relaxed max-w-3xl">
-                    {item.a}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+        <div className="wb-bezel p-1.5 rounded-2xl">
+          <div className="wb-surface rounded-xl divide-y divide-white/10 text-left overflow-hidden">
+            {FAQ_ITEMS.map((item, idx) => {
+              const isOpen = openFaq === idx;
+              return (
+                <div key={item.q} className="wb-spec-row transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => setOpenFaq(isOpen ? null : idx)}
+                    className="w-full px-5 py-4 flex items-center justify-between gap-4 text-left cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="font-mono text-[10px] tabular-nums text-emerald-400 shrink-0">
+                        0{idx + 1}
+                      </span>
+                      <span className="text-xs sm:text-sm font-display font-semibold text-white group-hover:text-emerald-400 transition-colors">
+                        {item.q}
+                      </span>
+                    </div>
+                    <ChevronDown
+                      className={`w-4 h-4 text-slate-400 shrink-0 transition-transform duration-200 ${
+                        isOpen ? 'rotate-180 text-emerald-400' : ''
+                      }`}
+                    />
+                  </button>
+                  {isOpen && (
+                    <div className="px-5 pb-4 pl-12 pr-8 text-xs text-slate-400 leading-relaxed max-w-3xl">
+                      {item.a}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </section>
 
-      {/* ── Flat Architectural Contact Section ── */}
+      {/* ── Architectural Double-Bezel Support Desk Section ── */}
       <section id="contact" className="scroll-mt-20">
-        <div className="wb-surface rounded-xl p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start text-left">
-          <div className="lg:col-span-5 space-y-4">
-            <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-emerald-400 font-semibold block">
-              Support Desk
-            </span>
-            <h2 className="text-2xl font-display font-semibold tracking-[-0.03em] text-white">
-              Need help with an audit or billing?
-            </h2>
-            <p className="text-xs sm:text-[13px] text-slate-400 leading-relaxed">
-              Reach out to our engineering team for APK scan questions, domain verification, CI/CD tokens, or refund requests.
-            </p>
+        <div className="wb-bezel p-1.5 rounded-2xl relative">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/50 to-transparent"
+          />
+          <div className="wb-surface rounded-xl p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start text-left">
+            <div className="lg:col-span-5 space-y-4">
+              <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-emerald-400 font-semibold block">
+                Support Desk
+              </span>
+              <h2 className="text-2xl font-display font-semibold tracking-[-0.035em] leading-[1.15]">
+                <span className="text-white">Need help with</span>{' '}
+                <span className="wb-headline-muted">an audit or billing?</span>
+              </h2>
+              <p className="text-xs sm:text-[13px] text-slate-400 leading-relaxed">
+                Reach out to our engineering team for APK scan questions, domain verification, CI/CD tokens, or refund requests.
+              </p>
 
-            <div className="space-y-2.5 pt-2 border-t border-white/10">
-              <div className="flex items-center gap-2.5 text-xs">
-                <Mail className="w-4 h-4 text-slate-400 shrink-0" />
-                <a
-                  href="mailto:checkmyapk.com@gmail.com"
-                  className="font-mono font-medium text-white hover:text-emerald-400 transition-colors"
-                >
-                  checkmyapk.com@gmail.com
-                </a>
-              </div>
-              <div className="flex items-center gap-2.5 text-xs text-slate-400">
-                <Clock className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Typical response within 12 hours</span>
+              <div className="space-y-2.5 pt-3 border-t border-white/10">
+                <div className="flex items-center gap-2.5 text-xs">
+                  <Mail className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <a
+                    href="mailto:checkmyapk.com@gmail.com"
+                    className="font-mono font-medium text-white hover:text-emerald-400 transition-colors"
+                  >
+                    checkmyapk.com@gmail.com
+                  </a>
+                </div>
+                <div className="flex items-center gap-2.5 text-xs text-slate-400">
+                  <Clock className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Typical response within 12 hours</span>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="lg:col-span-7">
-            <ContactUsForm
-              defaultName={currentUser?.name || ''}
-              defaultEmail={currentUser?.email || ''}
-            />
+            <div className="lg:col-span-7">
+              <ContactUsForm
+                defaultName={currentUser?.name || ''}
+                defaultEmail={currentUser?.email || ''}
+              />
+            </div>
           </div>
         </div>
       </section>

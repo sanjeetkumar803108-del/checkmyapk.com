@@ -87,7 +87,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {/* Box 1: User Name */}
         <div className="space-y-1 text-left">
-          <label className="text-[11px] font-bold text-slate-300 block">Your Name</label>
+          <label className="text-[11px] font-medium text-slate-300 block">Your Name</label>
           <div className="relative">
             <User className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
@@ -98,14 +98,14 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Enter your name"
-              className="w-full pl-10 pr-3.5 py-2.5 rounded-md bg-[#050811]/85 border border-white/10 focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500"
+              className="w-full pl-10 pr-3.5 py-2.5 rounded-md wb-surface-muted focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500"
             />
           </div>
         </div>
 
         {/* Box 2: User Email */}
         <div className="space-y-1 text-left">
-          <label className="text-[11px] font-bold text-slate-300 block">Email Address</label>
+          <label className="text-[11px] font-medium text-slate-300 block">Email Address</label>
           <div className="relative">
             <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
@@ -115,7 +115,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
-              className="w-full pl-10 pr-3.5 py-2.5 rounded-md bg-[#050811]/85 border border-white/10 focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500"
+              className="w-full pl-10 pr-3.5 py-2.5 rounded-md wb-surface-muted focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500"
             />
           </div>
         </div>
@@ -123,7 +123,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
 
       {/* Box 3: Topic / Message */}
       <div className="space-y-1 text-left">
-        <label className="text-[11px] font-bold text-slate-300 block">Topic / Message</label>
+        <label className="text-[11px] font-medium text-slate-300 block">Topic / Message</label>
         <div className="relative">
           <MessageSquare className="w-4 h-4 text-slate-500 absolute left-3.5 top-3 pointer-events-none" />
           <textarea
@@ -134,7 +134,7 @@ export const ContactUsForm: React.FC<ContactUsFormProps> = ({
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             placeholder="Write your topic, question, or issue here..."
-            className="w-full pl-10 pr-3.5 py-2.5 rounded-md bg-[#050811]/85 border border-white/10 focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500 resize-y"
+            className="w-full pl-10 pr-3.5 py-2.5 rounded-md wb-surface-muted focus:border-emerald-500/60 focus:outline-none text-xs sm:text-sm text-white placeholder-slate-500 resize-y"
           />
         </div>
       </div>

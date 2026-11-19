@@ -5,6 +5,7 @@ import {
   Binary,
   Check,
   ChevronDown,
+  ChevronUp,
   Code2,
   Copy,
   Download,
@@ -14,6 +15,7 @@ import {
   Lock,
   Radio,
   RefreshCw,
+  Search,
   Server,
   Shield,
   ShieldCheck,
@@ -22,6 +24,8 @@ import {
   Terminal,
   TrendingUp,
   Wrench,
+  X,
+  Zap,
 } from 'lucide-react';
 import { ScoreGauge } from './ScoreGauge';
 import { FindingCard } from './FindingCard';
@@ -34,6 +38,57 @@ interface MasterSnippet {
   filename: string;
   desc: string;
   code: string;
+}
+
+interface SummaryRow {
+  num: string;
+  label: string;
+  text: string;
+  accent: string;
+}
+
+function parseExecutiveSummary(summaryText?: string): SummaryRow[] {
+  if (!summaryText) return [];
+  const rawLines = summaryText.split('\n').map((l) => l.trim()).filter(Boolean);
+  const rows: SummaryRow[] = [];
+
+  const roleMeta = [
+    { label: 'Threat Posture', accent: 'border-emerald-500/35 text-emerald-400 bg-emerald-500/10' },
+    { label: 'Primary Attack Vector', accent: 'border-rose-500/35 text-rose-400 bg-rose-500/10' },
+    { label: '24-Hour Remediation', accent: 'border-cyan-500/35 text-cyan-400 bg-cyan-500/10' },
+  ];
+
+  for (let i = 0; i < rawLines.length && rows.length < 3; i++) {
+    const line = rawLines[i];
+    const cleaned = line
+      .replace(/^[0-9]+[.)]\s*/, '')
+      .replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}]\s*/u, '')
+      .replace(/^(THREAT LANDSCAPE|PRIMARY ATTACK VECTOR|24-HOUR REMEDIATION ROADMAP|VULNERABILITY STATUS|REMEDIATION|ARCHIVED [A-Z ]+|ZERO-RETENTION [A-Z ]+|PRIMARY EXPOSURE|ACTION):\s*/i, '')
+      .trim();
+
+    if (!cleaned) continue;
+    const meta = roleMeta[rows.length] || {
+      label: `Point 0${rows.length + 1}`,
+      accent: 'border-white/20 text-slate-300 bg-white/5',
+    };
+    rows.push({
+      num: `0${rows.length + 1}`,
+      label: meta.label,
+      text: cleaned,
+      accent: meta.accent,
+    });
+  }
+
+  if (rows.length === 0 && summaryText) {
+    rows.push({
+      num: '01',
+      label: 'Security Overview',
+      text: summaryText,
+      accent: 'border-emerald-500/35 text-emerald-400 bg-emerald-500/10',
+    });
+  }
+
+  return rows;
 }
 
 interface SecurityReportDashboardProps {
@@ -55,6 +110,7 @@ interface SecurityReportDashboardProps {
   onLoadDomainChallenge: () => void;
   onNewAudit: () => void;
   onRescanWeb?: (targetUrl: string) => void;
+  onRescanApk?: () => void;
   onExportJson: () => void;
   onExportMarkdown: () => void;
   onCopyMarkdown: () => void;
@@ -80,6 +136,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
   onLoadDomainChallenge,
   onNewAudit,
   onRescanWeb,
+  onRescanApk,
   onExportJson,
   onExportMarkdown,
   onCopyMarkdown,
@@ -93,6 +150,8 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
     );
     return hasVulns ? 'vulns' : 'all';
   });
+  const [findingSearch, setFindingSearch] = useState('');
+  const [allExpanded, setAllExpanded] = useState<boolean | undefined>(undefined);
   const [masterTab, setMasterTab] = useState<'vercel' | 'nextjs' | 'express'>('vercel');
   const [masterCopied, setMasterCopied] = useState(false);
   const [hashCopied, setHashCopied] = useState(false);
@@ -132,15 +191,36 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
 
   const filteredFindings = [...allFindings]
     .filter((f) => {
-      if (findingFilter === 'all') return true;
-      if (findingFilter === 'vulns') return f.severity !== 'PASS' && f.severity !== 'INFO';
-      if (findingFilter === 'pass') return f.severity === 'PASS' || f.severity === 'INFO';
-      return f.severity === findingFilter;
+      if (findingFilter === 'vulns' && (f.severity === 'PASS' || f.severity === 'INFO')) return false;
+      if (findingFilter === 'pass' && f.severity !== 'PASS' && f.severity !== 'INFO') return false;
+      if (findingFilter !== 'all' && findingFilter !== 'vulns' && findingFilter !== 'pass' && f.severity !== findingFilter) {
+        return false;
+      }
+      if (findingSearch.trim()) {
+        const q = findingSearch.toLowerCase().trim();
+        const text = `${f.title || ''} ${f.type || ''} ${f.owaspRef || ''} ${f.category || ''} ${f.description || ''} ${f.proof || ''}`.toLowerCase();
+        if (!text.includes(q)) return false;
+      }
+      return true;
     })
     .sort(
       (a, b) =>
         (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9)
     );
+
+  const summaryRows = parseExecutiveSummary(report.aiExecutiveSummary);
+
+  const critCount = report.summaryCounts?.critical ?? 0;
+  const highCount = report.summaryCounts?.high ?? 0;
+  const medCount = report.summaryCounts?.medium ?? 0;
+  const lowCount = report.summaryCounts?.low ?? 0;
+  const passCount = report.summaryCounts?.pass ?? 0;
+  const totalFindingsCount = critCount + highCount + medCount + lowCount + passCount;
+
+  // Realistic projected score if Critical & High issues are resolved
+  const potentialGain = (critCount * 28) + (highCount * 16) + (medCount * 6);
+  const estUpliftScore = Math.min(100, Math.max(report.score, report.score + potentialGain));
+  const upliftDelta = estUpliftScore - report.score;
 
   const logsCount = report.telemetry?.realTimeLogs?.length || 0;
 
@@ -400,6 +480,17 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
               </button>
             )}
 
+            {report.isApkAudit && onRescanApk && (
+              <button
+                type="button"
+                onClick={onRescanApk}
+                className="h-9 px-3 rounded-md text-xs font-medium wb-surface-muted hover:border-white/25 text-slate-300 hover:text-white inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Re-scan APK</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={onNewAudit}
@@ -426,7 +517,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
             />
           </div>
 
-          {/* Right: Severity Strip + Priority Action Brief */}
+          {/* Right: Severity Strip + Remediation Uplift + Priority Action Brief */}
           <div className="lg:col-span-8 p-5 flex flex-col justify-between gap-4">
             {/* Clickable Severity Strip (0 counts dimmed so real issues stand out!) */}
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
@@ -459,13 +550,76 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
               })}
             </div>
 
-            {/* Clean Executive Action Brief */}
-            {report.aiExecutiveSummary && (
-              <div className="wb-ide-evidence rounded-xl border border-white/10 p-4 space-y-2.5 flex-1">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+            {/* Severity Distribution Bar & Remediation Uplift Simulator */}
+            {totalFindingsCount > 0 && (
+              <div className="p-2.5 rounded-lg bg-black/30 border border-white/5 space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-mono flex-wrap gap-2">
+                  <span className="text-slate-400 text-[10px] uppercase tracking-wider">
+                    Severity Distribution ({totalFindingsCount} items)
+                  </span>
+                  {upliftDelta > 0 ? (
+                    <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10.5px]">
+                      <Zap className="w-3 h-3 text-emerald-400 shrink-0" />
+                      <span>
+                        Projected: <strong className="text-white">{report.score}</strong> → <strong className="text-emerald-300">{estUpliftScore}</strong> (+{upliftDelta} pts uplift)
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="inline-flex items-center gap-1 text-emerald-400 text-[10.5px]">
+                      <Check className="w-3 h-3" />
+                      <span>Zero High/Critical Vulnerabilities</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Segmented Progress Bar */}
+                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden flex gap-0.5">
+                  {critCount > 0 && (
+                    <div
+                      style={{ width: `${(critCount / totalFindingsCount) * 100}%` }}
+                      className="bg-rose-500 h-full rounded-sm"
+                      title={`Critical: ${critCount}`}
+                    />
+                  )}
+                  {highCount > 0 && (
+                    <div
+                      style={{ width: `${(highCount / totalFindingsCount) * 100}%` }}
+                      className="bg-orange-500 h-full rounded-sm"
+                      title={`High: ${highCount}`}
+                    />
+                  )}
+                  {medCount > 0 && (
+                    <div
+                      style={{ width: `${(medCount / totalFindingsCount) * 100}%` }}
+                      className="bg-amber-400 h-full rounded-sm"
+                      title={`Medium: ${medCount}`}
+                    />
+                  )}
+                  {lowCount > 0 && (
+                    <div
+                      style={{ width: `${(lowCount / totalFindingsCount) * 100}%` }}
+                      className="bg-cyan-400 h-full rounded-sm"
+                      title={`Low: ${lowCount}`}
+                    />
+                  )}
+                  {passCount > 0 && (
+                    <div
+                      style={{ width: `${(passCount / totalFindingsCount) * 100}%` }}
+                      className="bg-emerald-500 h-full rounded-sm"
+                      title={`Passed: ${passCount}`}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Clean Executive Action Brief (Structured 3-Row Spec Format) */}
+            {summaryRows.length > 0 && (
+              <div className="wb-ide-evidence rounded-xl border border-white/10 p-4 space-y-3 flex-1">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
                   <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] font-semibold text-emerald-400">
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Priority Action Brief</span>
+                    <span>Priority Action Brief · Strategic Triage</span>
                   </span>
                   {hasWebHeaderGaps && (
                     <button
@@ -478,8 +632,21 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                     </button>
                   )}
                 </div>
-                <div className="text-slate-300 whitespace-pre-line leading-relaxed text-xs">
-                  {report.aiExecutiveSummary}
+
+                <div className="space-y-2">
+                  {summaryRows.map((row) => (
+                    <div
+                      key={row.num}
+                      className="flex items-start gap-2.5 p-2 rounded-lg bg-black/25 border border-white/5 text-xs leading-relaxed"
+                    >
+                      <span className={`font-mono text-[9.5px] font-semibold px-2 py-0.5 rounded border shrink-0 mt-0.5 ${row.accent}`}>
+                        {row.num} · {row.label}
+                      </span>
+                      <p className="text-slate-300 min-w-0 flex-1 break-words">
+                        {row.text}
+                      </p>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -489,13 +656,13 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
 
       {/* ── ZONE 3: 4-Tab Security Workbench ── */}
       <div className="space-y-4">
-        {/* Clean Workbench Tab Navigation */}
-        <div className="flex items-center justify-between gap-3 border-b border-white/10 overflow-x-auto no-print">
+        {/* Sticky Workbench Tab Navigation */}
+        <div className="sticky top-14 z-30 bg-[#070a09]/95 backdrop-blur-md pt-2 pb-2 border-b border-white/10 flex items-center justify-between gap-3 overflow-x-auto no-print">
           <div className="flex items-center gap-1 min-w-max">
             <button
               type="button"
               onClick={() => setActiveTab('findings')}
-              className={`relative px-4 py-3 text-xs font-medium inline-flex items-center gap-2 transition-colors cursor-pointer ${
+              className={`relative px-4 py-2.5 text-xs font-medium inline-flex items-center gap-2 transition-colors cursor-pointer ${
                 activeTab === 'findings'
                   ? 'text-white font-semibold'
                   : 'text-slate-400 hover:text-white'
@@ -507,7 +674,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                 {vulnFindings.length}
               </span>
               {activeTab === 'findings' && (
-                <span className="absolute inset-x-3 -bottom-px h-[2px] bg-emerald-400" />
+                <span className="absolute inset-x-3 -bottom-2 h-[2px] bg-emerald-400" />
               )}
             </button>
 
@@ -515,7 +682,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
               <button
                 type="button"
                 onClick={() => setActiveTab('quickfix')}
-                className={`relative px-4 py-3 text-xs font-medium inline-flex items-center gap-2 transition-colors cursor-pointer ${
+                className={`relative px-4 py-2.5 text-xs font-medium inline-flex items-center gap-2 transition-colors cursor-pointer ${
                   activeTab === 'quickfix'
                     ? 'text-white font-semibold'
                     : 'text-slate-400 hover:text-white'
@@ -536,7 +703,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                   </>
                 )}
                 {activeTab === 'quickfix' && (
-                  <span className="absolute inset-x-3 -bottom-px h-[2px] bg-emerald-400" />
+                  <span className="absolute inset-x-3 -bottom-2 h-[2px] bg-emerald-400" />
                 )}
               </button>
             )}
@@ -544,7 +711,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
             <button
               type="button"
               onClick={() => setActiveTab('surface')}
-              className={`relative px-4 py-3 text-xs font-medium inline-flex items-center gap-2 transition-colors cursor-pointer ${
+              className={`relative px-4 py-2.5 text-xs font-medium inline-flex items-center gap-2 transition-colors cursor-pointer ${
                 activeTab === 'surface'
                   ? 'text-white font-semibold'
                   : 'text-slate-400 hover:text-white'
@@ -557,7 +724,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
               )}
               <span>Attack Surface</span>
               {activeTab === 'surface' && (
-                <span className="absolute inset-x-3 -bottom-px h-[2px] bg-emerald-400" />
+                <span className="absolute inset-x-3 -bottom-2 h-[2px] bg-emerald-400" />
               )}
             </button>
 
@@ -565,7 +732,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
               <button
                 type="button"
                 onClick={() => setActiveTab('logs')}
-                className={`relative px-4 py-3 text-xs font-medium inline-flex items-center gap-2 transition-colors cursor-pointer ${
+                className={`relative px-4 py-2.5 text-xs font-medium inline-flex items-center gap-2 transition-colors cursor-pointer ${
                   activeTab === 'logs'
                     ? 'text-white font-semibold'
                     : 'text-slate-400 hover:text-white'
@@ -577,54 +744,114 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                   {logsCount}
                 </span>
                 {activeTab === 'logs' && (
-                  <span className="absolute inset-x-3 -bottom-px h-[2px] bg-emerald-400" />
+                  <span className="absolute inset-x-3 -bottom-2 h-[2px] bg-emerald-400" />
                 )}
               </button>
             )}
+          </div>
+
+          {/* Right Compact Target Context Badge in Sticky Bar */}
+          <div className="hidden sm:flex items-center gap-2 pr-2 shrink-0 font-mono text-[10.5px]">
+            <span className="text-slate-400 truncate max-w-[200px]" title={targetDisplay}>
+              {targetDisplay}
+            </span>
+            <span className="text-slate-600">·</span>
+            <span
+              className={`px-2 py-0.5 rounded font-semibold border ${
+                report.score >= 80
+                  ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
+                  : report.score >= 50
+                  ? 'text-amber-400 bg-amber-500/10 border-amber-500/30'
+                  : 'text-rose-400 bg-rose-500/10 border-rose-500/30'
+              }`}
+            >
+              Score {report.score}/100
+            </span>
           </div>
         </div>
 
         {/* ── TAB 1: FINDINGS (Always visible in Print/PDF too) ── */}
         <div className={activeTab === 'findings' ? 'space-y-4' : 'hidden print:block space-y-4'}>
-          {/* Compact Severity Filter Pills */}
-          <div className="flex items-center gap-1.5 flex-wrap no-print">
-            {(
-              [
-                { id: 'vulns' as FindingFilter, label: `Issues (${vulnFindings.length})`, show: true },
-                { id: 'CRITICAL' as FindingFilter, label: `Critical (${report.summaryCounts?.critical ?? 0})`, show: (report.summaryCounts?.critical ?? 0) > 0 },
-                { id: 'HIGH' as FindingFilter, label: `High (${report.summaryCounts?.high ?? 0})`, show: (report.summaryCounts?.high ?? 0) > 0 },
-                { id: 'MEDIUM' as FindingFilter, label: `Medium (${report.summaryCounts?.medium ?? 0})`, show: (report.summaryCounts?.medium ?? 0) > 0 },
-                { id: 'LOW' as FindingFilter, label: `Low (${report.summaryCounts?.low ?? 0})`, show: (report.summaryCounts?.low ?? 0) > 0 },
-                {
-                  id: 'pass' as FindingFilter,
-                  label: `${hasInfo ? 'Passed & Info' : 'Passed'} (${passAndInfoFindings.length})`,
-                  show: passAndInfoFindings.length > 0,
-                },
-                { id: 'all' as FindingFilter, label: `All (${allFindings.length})`, show: true },
-              ]
-            )
-              .filter((p) => p.show)
-              .map((pill) => (
-                <button
-                  key={pill.id}
-                  type="button"
-                  onClick={() => setFindingFilter(pill.id)}
-                  className={`px-3 py-1.5 rounded-md font-mono text-[11px] font-medium border transition-colors cursor-pointer ${
-                    findingFilter === pill.id
-                      ? 'bg-emerald-500/12 border-emerald-500/35 text-emerald-400 font-semibold'
-                      : 'bg-white/[0.03] border-white/10 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {pill.label}
-                </button>
-              ))}
+          {/* Findings Toolbar: Severity Filter Pills + Search Input + Expand/Collapse All */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 no-print">
+            {/* Filter Pills */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {(
+                [
+                  { id: 'vulns' as FindingFilter, label: `Issues (${vulnFindings.length})`, show: true },
+                  { id: 'CRITICAL' as FindingFilter, label: `Critical (${report.summaryCounts?.critical ?? 0})`, show: (report.summaryCounts?.critical ?? 0) > 0 },
+                  { id: 'HIGH' as FindingFilter, label: `High (${report.summaryCounts?.high ?? 0})`, show: (report.summaryCounts?.high ?? 0) > 0 },
+                  { id: 'MEDIUM' as FindingFilter, label: `Medium (${report.summaryCounts?.medium ?? 0})`, show: (report.summaryCounts?.medium ?? 0) > 0 },
+                  { id: 'LOW' as FindingFilter, label: `Low (${report.summaryCounts?.low ?? 0})`, show: (report.summaryCounts?.low ?? 0) > 0 },
+                  {
+                    id: 'pass' as FindingFilter,
+                    label: `${hasInfo ? 'Passed & Info' : 'Passed'} (${passAndInfoFindings.length})`,
+                    show: passAndInfoFindings.length > 0,
+                  },
+                  { id: 'all' as FindingFilter, label: `All (${allFindings.length})`, show: true },
+                ]
+              )
+                .filter((p) => p.show)
+                .map((pill) => (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    onClick={() => setFindingFilter(pill.id)}
+                    className={`px-3 py-1.5 rounded-md font-mono text-[11px] font-medium border transition-colors cursor-pointer ${
+                      findingFilter === pill.id
+                        ? 'bg-emerald-500/12 border-emerald-500/35 text-emerald-400 font-semibold'
+                        : 'bg-white/[0.03] border-white/10 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {pill.label}
+                  </button>
+                ))}
+            </div>
+
+            {/* Search Input & Expand/Collapse All Button */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="relative min-w-[190px] flex-1 sm:w-56">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  value={findingSearch}
+                  onChange={(e) => setFindingSearch(e.target.value)}
+                  placeholder="Filter findings..."
+                  className="w-full h-8 pl-8 pr-7 rounded-md font-mono text-xs bg-black/40 border border-white/15 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30"
+                />
+                {findingSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setFindingSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                    title="Clear filter"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setAllExpanded((prev) => (prev === true ? false : true))}
+                className="h-8 px-2.5 rounded-md font-mono text-[11px] font-medium border border-white/10 bg-white/[0.03] text-slate-300 hover:text-white inline-flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors"
+                title={allExpanded ? 'Collapse all finding cards' : 'Expand all finding cards'}
+              >
+                {allExpanded ? <ChevronUp className="w-3.5 h-3.5 text-emerald-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+                <span className="hidden sm:inline">{allExpanded ? 'Collapse All' : 'Expand All'}</span>
+              </button>
+            </div>
           </div>
 
-          {/* Findings Cards (Only #1 expanded by default for instant scannability) */}
+          {/* Findings Cards */}
           <div className="flex flex-col gap-3">
             {filteredFindings.length === 0 ? (
               <div className="wb-surface rounded-xl p-10 text-center text-slate-400 text-xs">
-                No findings match this filter. Switch to <strong>All</strong> or <strong>Passed</strong> to view full results.
+                {findingSearch ? (
+                  <span>No findings matching &quot;{findingSearch}&quot;. Try a different keyword or clear the search.</span>
+                ) : (
+                  <span>No findings match this filter. Switch to <strong>All</strong> or <strong>Passed</strong> to view full results.</span>
+                )}
               </div>
             ) : (
               filteredFindings.map((finding, idx) => (
@@ -634,6 +861,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                   detectedTech={report.telemetry?.detectedTech}
                   targetUrl={report.targetUrl}
                   defaultExpanded={idx === 0}
+                  forceExpanded={allExpanded}
                   canUseAiFixDoctor={activePlanPolicy.features.aiFixDoctor}
                   onRequestUpgrade={onRequestUpgrade}
                 />
@@ -723,8 +951,13 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
             )}
 
             {report.isApkAudit && report.apkMeta && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {/* Exported IPC Surface */}
+              <div className="wb-bezel p-1.5 rounded-2xl relative">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/50 to-transparent"
+                />
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Exported IPC Surface */}
                 {report.apkMeta.exportedComponents && (
                   <div className="wb-surface rounded-xl p-5 space-y-3.5">
                     <div className="flex items-center justify-between gap-2">
@@ -863,6 +1096,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                   </div>
                 </div>
               </div>
+            </div>
             )}
           </div>
         )}
@@ -1046,8 +1280,13 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
 
             {/* APK Deep Attack Surface (Backend APIs + Dalvik CFG + Native ELF) */}
             {report.isApkAudit && report.apkMeta && (
-              <div className="space-y-4">
-                {/* Extracted Backend APIs */}
+              <div className="wb-bezel p-1.5 rounded-2xl relative">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent"
+                />
+                <div className="space-y-4">
+                  {/* Extracted Backend APIs */}
                 <div className="wb-surface rounded-xl p-5 space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
@@ -1163,6 +1402,7 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                   </div>
                 )}
               </div>
+            </div>
             )}
           </div>
         )}

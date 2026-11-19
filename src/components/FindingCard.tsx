@@ -33,6 +33,7 @@ interface FindingCardProps {
   detectedTech?: string[];
   targetUrl?: string;
   defaultExpanded?: boolean;
+  forceExpanded?: boolean;
   canUseAiFixDoctor?: boolean;
   onRequestUpgrade?: () => void;
 }
@@ -577,11 +578,23 @@ export const FindingCard: React.FC<FindingCardProps> = ({
   detectedTech = [], 
   targetUrl = '',
   defaultExpanded = false,
+  forceExpanded,
   canUseAiFixDoctor = true,
   onRequestUpgrade
 }) => {
   const isPass = finding.severity === 'PASS' || finding.severity === 'INFO';
-  const [expanded, setExpanded] = useState(defaultExpanded || (!isPass && finding.severity === 'CRITICAL'));
+  const [internalExpanded, setInternalExpanded] = useState(
+    defaultExpanded || (!isPass && finding.severity === 'CRITICAL')
+  );
+
+  React.useEffect(() => {
+    if (forceExpanded !== undefined) {
+      setInternalExpanded(forceExpanded);
+    }
+  }, [forceExpanded]);
+
+  const expanded = internalExpanded;
+  const setExpanded = setInternalExpanded;
   const [copied, setCopied] = useState(false);
 
   const preconfigured = getPreconfiguredFixes(finding.type, targetUrl);
@@ -670,7 +683,8 @@ export const FindingCard: React.FC<FindingCardProps> = ({
       });
 
       if (!res.ok) {
-        throw new Error(`Failed to generate AI fix (${res.statusText})`);
+        const errPayload = await res.json().catch(() => null);
+        throw new Error(errPayload?.error || `Failed to generate AI fix (${res.statusText})`);
       }
 
       const data = await res.json();
@@ -701,34 +715,15 @@ export const FindingCard: React.FC<FindingCardProps> = ({
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
-              <span className={`font-mono text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded border ${badgeStyle}`}>
+              <span className={`font-mono text-[10px] uppercase font-semibold px-2 py-0.5 rounded border ${badgeStyle}`}>
                 {finding.severity}
               </span>
               {finding.owaspRef && (
-                <span className="font-mono text-[10px] font-medium px-1.5 py-0.5 rounded wb-spec-code">
+                <span className="font-mono text-[10px] font-medium px-2 py-0.5 rounded wb-spec-code">
                   {finding.owaspRef}
                 </span>
               )}
-              {(() => {
-                const policyTag = getPlayComplianceTag(finding);
-                return policyTag ? (
-                  <span className="font-mono text-[10px] font-medium px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25">
-                    {policyTag}
-                  </span>
-                ) : null;
-              })()}
-              {!isPass && (() => {
-                const conf = getConfidenceTag(finding);
-                return (
-                  <span
-                    title={conf.tooltip}
-                    className={`font-mono text-[10px] font-medium px-1.5 py-0.5 rounded border ${conf.style}`}
-                  >
-                    {conf.label}
-                  </span>
-                );
-              })()}
-              <span className="text-[11px] text-slate-400 ml-0.5">
+              <span className="text-[11px] font-mono text-slate-400">
                 {finding.category}
               </span>
             </div>
@@ -758,6 +753,32 @@ export const FindingCard: React.FC<FindingCardProps> = ({
       {/* ── Expanded Deep Breakdown ── */}
       {expanded && (
         <div className="px-4 sm:px-5 pb-5 pt-4 space-y-4 text-xs border-t border-white/10 wb-surface-muted border-x-0 border-b-0">
+          {/* Metadata & Verification Strip */}
+          {(!isPass || getPlayComplianceTag(finding)) && (
+            <div className="flex items-center gap-2 flex-wrap pb-2 border-b border-white/5 font-mono text-[10.5px]">
+              {(() => {
+                const policyTag = getPlayComplianceTag(finding);
+                return policyTag ? (
+                  <span className="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25">
+                    {policyTag}
+                  </span>
+                ) : null;
+              })()}
+              {!isPass && (() => {
+                const conf = getConfidenceTag(finding);
+                return (
+                  <span
+                    title={conf.tooltip}
+                    className={`px-2 py-0.5 rounded border ${conf.style}`}
+                  >
+                    {conf.label}
+                  </span>
+                );
+              })()}
+              <span className="text-slate-500">·</span>
+              <span className="text-slate-400">Domain: {finding.category}</span>
+            </div>
+          )}
 
           {/* 1. Risk & Impact */}
           <div className="space-y-1.5">
@@ -887,52 +908,100 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                 )}
 
                 {aiFixData && (
-                  <div className="p-3.5 rounded-lg wb-surface-muted border border-emerald-500/25 space-y-3">
-                    <div className="flex items-center gap-2 text-emerald-400 font-mono font-semibold text-[11px] uppercase tracking-wider">
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>
-                        {aiFixData.source === 'deterministic'
-                          ? 'Deterministic Remediation Rulebook'
-                          : 'Gemini AI Deep Remediation'}
+                  <div className="p-4 sm:p-5 rounded-xl wb-surface-muted border border-emerald-500/25 space-y-4">
+                    <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-white/10">
+                      <div className="flex items-center gap-2 text-emerald-400 font-mono font-semibold text-[11px] uppercase tracking-wider">
+                        <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                        <span>
+                          {aiFixData.source === 'deterministic'
+                            ? 'Remediation Playbook'
+                            : 'Gemini AI Deep Remediation'}
+                        </span>
+                      </div>
+                      <span className="font-mono text-[9.5px] uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/25 text-emerald-400">
+                        English · Point-Wise
                       </span>
                     </div>
 
-                    <div className="space-y-2.5 text-slate-300 text-[11.5px] leading-relaxed">
-                      <div>
-                        <strong className="text-white block mb-0.5">Root Cause:</strong>
-                        <p>{aiFixData.simpleExplanation}</p>
-                      </div>
-
-                      <div>
-                        <strong className="text-rose-400 block mb-0.5">Attack Scenario:</strong>
-                        <p className="text-slate-300">{aiFixData.dangerScenario}</p>
-                      </div>
-
-                      {aiFixData.steps && (
-                        <div>
-                          <strong className="text-emerald-400 block mb-1">Action Steps:</strong>
-                          <ul className="list-disc pl-4 space-y-0.5 text-slate-300">
-                            {aiFixData.steps.map((st: string, idx: number) => (
-                              <li key={idx}>{st}</li>
+                    <div className="space-y-4 text-slate-300 text-[12px] leading-relaxed">
+                      {/* 1. Root Cause */}
+                      <div className="space-y-2">
+                        <strong className="font-mono text-[10.5px] uppercase tracking-wider text-white block">
+                          01 · Root Cause
+                        </strong>
+                        <ul className="space-y-2.5 pl-1">
+                          {String(aiFixData.simpleExplanation || '')
+                            .split(/\n+/)
+                            .map((line) => line.replace(/^[•\-*]\s*/, '').trim())
+                            .filter(Boolean)
+                            .map((point, idx) => (
+                              <li key={idx} className="flex items-start gap-2.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-1.5 shrink-0" />
+                                <span className="text-slate-300">{point}</span>
+                              </li>
                             ))}
-                          </ul>
+                        </ul>
+                      </div>
+
+                      {/* 2. Attack Scenario */}
+                      <div className="space-y-2 pt-3 border-t border-white/10">
+                        <strong className="font-mono text-[10.5px] uppercase tracking-wider text-rose-400 block">
+                          02 · Attack Scenario
+                        </strong>
+                        <ul className="space-y-2.5 pl-1">
+                          {String(aiFixData.dangerScenario || '')
+                            .split(/\n+/)
+                            .map((line) => line.replace(/^[•\-*]\s*/, '').trim())
+                            .filter(Boolean)
+                            .map((point, idx) => (
+                              <li key={idx} className="flex items-start gap-2.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 mt-1.5 shrink-0" />
+                                <span className="text-slate-300">{point}</span>
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+
+                      {/* 3. Action Steps */}
+                      {Array.isArray(aiFixData.steps) && aiFixData.steps.length > 0 && (
+                        <div className="space-y-2.5 pt-3 border-t border-white/10">
+                          <strong className="font-mono text-[10.5px] uppercase tracking-wider text-emerald-400 block">
+                            03 · Action Steps
+                          </strong>
+                          <ol className="space-y-2.5">
+                            {aiFixData.steps.map((st: string, idx: number) => {
+                              const cleanStep = String(st || '').replace(/^(?:Step\s*\d+[:.\-]\s*|\d+[.)]\s*)/i, '').trim();
+                              return (
+                                <li key={idx} className="flex items-start gap-2.5">
+                                  <span className="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 shrink-0 mt-0.5 tabular-nums">
+                                    0{idx + 1}
+                                  </span>
+                                  <span className="text-slate-300">{cleanStep}</span>
+                                </li>
+                              );
+                            })}
+                          </ol>
                         </div>
                       )}
 
+                      {/* 4. Secure Code Patch */}
                       {aiFixData.codeBlock && (
-                        <div className="mt-2 space-y-2">
+                        <div className="pt-3 border-t border-white/10 space-y-3">
+                          <strong className="font-mono text-[10.5px] uppercase tracking-wider text-cyan-400 block">
+                            04 · Recommended Code Patch
+                          </strong>
                           {aiFixData.beforeCode && (
                             <div className="rounded-lg border border-rose-500/25 overflow-hidden">
-                              <div className="px-2.5 py-1 wb-diff-del border-b border-rose-500/20 font-mono text-[10px] font-semibold">
+                              <div className="px-2.5 py-1.5 wb-diff-del border-b border-rose-500/20 font-mono text-[10px] font-semibold">
                                 - Vulnerable Pattern
                               </div>
-                              <pre className="p-2.5 wb-diff-del font-mono text-[10.5px] overflow-x-auto select-all">
+                              <pre className="p-3 wb-diff-del font-mono text-[10.5px] overflow-x-auto select-all">
                                 {aiFixData.beforeCode}
                               </pre>
                             </div>
                           )}
                           <div className="rounded-lg border border-emerald-500/30 overflow-hidden wb-surface">
-                            <div className="flex items-center justify-between px-2.5 py-1.5 wb-ide-chrome border-b border-white/10 font-mono text-[10px] text-slate-300">
+                            <div className="flex items-center justify-between px-3 py-2 wb-ide-chrome border-b border-white/10 font-mono text-[10px] text-slate-300">
                               <span>
                                 + Secure Patch: <strong className="text-emerald-400">{aiFixData.codeBlock.filename}</strong>
                               </span>
@@ -945,13 +1014,13 @@ export const FindingCard: React.FC<FindingCardProps> = ({
                                 Copy Fix
                               </button>
                             </div>
-                            <pre className="p-2.5 text-emerald-300 font-mono text-[10.5px] overflow-x-auto select-all">
+                            <pre className="p-3 text-emerald-300 font-mono text-[10.5px] overflow-x-auto select-all leading-relaxed">
                               {aiFixData.codeBlock.code}
                             </pre>
                           </div>
                           {aiFixData.verifyCommand && (
-                            <div className="px-2.5 py-1.5 rounded-lg wb-ide-evidence border border-white/10 text-[10px] font-mono text-slate-400">
-                              Verify: <span className="text-cyan-400">{aiFixData.verifyCommand}</span>
+                            <div className="px-3 py-2 rounded-lg wb-ide-evidence border border-white/10 text-[10.5px] font-mono text-slate-400">
+                              Verify: <span className="text-cyan-400 select-all">{aiFixData.verifyCommand}</span>
                             </div>
                           )}
                         </div>

@@ -2,6 +2,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
@@ -20,6 +21,7 @@ import {
 } from './server/scanner/aiAdvisor.ts';
 import { peekApkPackageName, scanApkBuffer } from './server/scanner/apkScanner.ts';
 import { getPlanPolicy, type PlanPolicy } from './src/data/planPolicy.ts';
+import { BLOG_POSTS, getBlogPostBySlug } from './src/data/blogPosts.ts';
 import {
   createScanJob,
   getScanJob,
@@ -42,7 +44,9 @@ import {
   registerAccount,
   authenticateAccount,
   getAccountById,
+  getAccountByApiToken,
   recordUserScan,
+  getSavedScanReport,
   consumeScanTargetQuota,
   getAccountPlanById,
   updateAccountPlan,
@@ -168,6 +172,47 @@ app.get('/.well-known/security.txt', (_req, res) => {
   );
 });
 
+app.get('/robots.txt', (_req, res) => {
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.send('User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: https://checkmyapk.com/sitemap.xml\n');
+});
+
+app.get('/sitemap.xml', (_req, res) => {
+  res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+  const today = new Date().toISOString().slice(0, 10);
+  const blogEntries = BLOG_POSTS.map(
+    (post) => `  <url>
+    <loc>https://checkmyapk.com/blog/${post.slug}</loc>
+    <lastmod>${post.publishedAt}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.85</priority>
+  </url>`
+  ).join('\n');
+
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://checkmyapk.com/</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://checkmyapk.com/pricing</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://checkmyapk.com/blog</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+${blogEntries}
+</urlset>`);
+});
+
 // Dodo Payments webhook MUST read the raw JSON payload before express.json() parses it.
 app.post('/api/webhooks/dodo', express.raw({ type: 'application/json' }), (req, res) => {
   try {
@@ -271,7 +316,7 @@ app.post('/api/webhooks/dodo', express.raw({ type: 'application/json' }), (req, 
   }
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
 const authAttemptWindow = new Map<string, { count: number; resetAt: number }>();
 function checkAuthRateLimit(ip: string): { allowed: boolean; retryAfterSec: number } {
@@ -314,6 +359,25 @@ function clearSessionCookie(res: express.Response) {
 }
 
 function getAuthenticatedUserId(req: express.Request): string | null {
+  // 1. Support Workspace CI/CD API Token & Bearer Session from CLI / GitHub Actions
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const bearer = authHeader.slice(7).trim();
+    if (bearer.startsWith('cma_live_')) {
+      const user = getAccountByApiToken(bearer);
+      if (user) {
+        const policy = getPlanPolicy(user.plan);
+        if (policy.features.apiTokenAccess) {
+          return user.id;
+        }
+      }
+      return null;
+    }
+    const sessionUid = verifySessionToken(bearer);
+    if (sessionUid) return sessionUid;
+  }
+
+  // 2. Cookie session (Web browser interactive UI)
   const rawToken = parseCookieHeader(req.headers.cookie, SESSION_COOKIE_NAME);
   return verifySessionToken(rawToken);
 }
@@ -497,10 +561,23 @@ app.post('/api/auth/logout', (_req, res) => {
 app.post('/api/auth/history', (req, res) => {
   const uid = getAuthenticatedUserId(req);
   if (!uid) return res.status(401).json({ error: 'Authentication required.' });
-  const { target = '', mode = 'apk', score = 0, grade = 'B', criticalCount = 0 } = req.body || {};
-  const user = recordUserScan(uid, { target, mode, score, grade, criticalCount });
-  if (!user) return res.status(401).json({ error: 'Account not found.' });
-  return res.json({ user });
+  const { target = '', mode = 'apk', score = 0, grade = 'B', criticalCount = 0, report } = req.body || {};
+  const result = recordUserScan(uid, { target, mode, score, grade, criticalCount }, report);
+  if (!result) return res.status(401).json({ error: 'Account not found.' });
+  return res.json({ user: result.user, scanId: result.scanId });
+});
+
+app.get('/api/auth/history/:scanId', (req, res) => {
+  const uid = getAuthenticatedUserId(req);
+  if (!uid) return res.status(401).json({ error: 'Authentication required.' });
+  const report = getSavedScanReport(uid, req.params.scanId);
+  if (!report) {
+    return res.status(404).json({
+      error: 'Saved report snapshot not found on server for this older history entry.',
+      code: 'REPORT_NOT_FOUND',
+    });
+  }
+  return res.json({ report });
 });
 
 app.post('/api/auth/plan', (req, res) => {
@@ -1421,9 +1498,42 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
+    const distHtmlPath = path.join(__dirname, 'dist', 'index.html');
     app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+    app.get('*', (req, res) => {
+      try {
+        const cleanPath = req.path.replace(/\/+$/, '');
+        if (cleanPath === '/blog' || cleanPath.startsWith('/blog/')) {
+          const slug = cleanPath.startsWith('/blog/') ? cleanPath.slice('/blog/'.length) : null;
+          const post = getBlogPostBySlug(slug);
+          const pageTitle = post
+            ? post.metaTitle
+            : 'Security Blog & Remediation Guides | CheckMyAPK';
+          const pageDesc = post
+            ? post.metaDescription
+            : 'Practical Android APK security, OWASP MASVS v2, HTTP headers, CORS, JWT, and cloud BaaS remediation guides with copy-paste fixes.';
+          const canonicalUrl = post
+            ? `https://checkmyapk.com/blog/${post.slug}`
+            : 'https://checkmyapk.com/blog';
+          const esc = (s: string) =>
+            s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          let html = fs.readFileSync(distHtmlPath, 'utf8');
+          html = html
+            .replace(/<title>[\s\S]*?<\/title>/i, `<title>${esc(pageTitle)}</title>`)
+            .replace(/(<meta\s+name="description"\s+content=")[^"]*(")/i, `$1${esc(pageDesc)}$2`)
+            .replace(/(<link\s+rel="canonical"\s+href=")[^"]*(")/i, `$1${esc(canonicalUrl)}$2`)
+            .replace(/(<meta\s+property="og:title"\s+content=")[^"]*(")/i, `$1${esc(pageTitle)}$2`)
+            .replace(/(<meta\s+property="og:description"\s+content=")[^"]*(")/i, `$1${esc(pageDesc)}$2`)
+            .replace(/(<meta\s+property="og:url"\s+content=")[^"]*(")/i, `$1${esc(canonicalUrl)}$2`)
+            .replace(/(<meta\s+name="twitter:title"\s+content=")[^"]*(")/i, `$1${esc(pageTitle)}$2`)
+            .replace(/(<meta\s+name="twitter:description"\s+content=")[^"]*(")/i, `$1${esc(pageDesc)}$2`);
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          return res.send(html);
+        }
+      } catch {
+        // Fallback to static index.html
+      }
+      return res.sendFile(distHtmlPath);
     });
   }
 
