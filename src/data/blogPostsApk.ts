@@ -42,6 +42,121 @@ export interface BlogPost {
 
 export const APK_BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'ai-generated-android-apk-security-flaws-fix-guide',
+    title:
+      'Shipped an Android App with AI or LLM APIs? 6 Hidden APK Security Flaws That Leak Your Keys, User Data & Play Store Approval',
+    metaTitle: '6 Hidden Security Flaws in AI-Built Android APKs & AABs | CheckMyAPK',
+    metaDescription:
+      'Used AI coding assistants or Gemini/OpenAI SDKs to build your Android APK or AAB? Learn the 6 silent vulnerabilities attackers extract in 5 seconds via JADX—and how to harden your release build.',
+    category: 'Android APK',
+    owaspRef: 'MASVS-CRYPTO-1 / PLATFORM-1',
+    publishedAt: '2026-11-19',
+    readTime: '8 min read',
+    keywords: [
+      'AI generated Android app security',
+      'vibe coded APK vulnerabilities',
+      'secure Gemini OpenAI key in Android APK',
+      'Capacitor Flutter AI app security',
+      'audit AI built APK AAB',
+      'OWASP MASVS AI mobile app',
+    ],
+    excerpt:
+      'Decompiling an Android APK or AAB takes literally 5 seconds with JADX-GUI. If an AI assistant wrote your Kotlin, Flutter, React Native, or Capacitor app, chances are your LLM keys, SSL bypasses, and internal APIs are sitting in plain sight.',
+    summaryPoints: [
+      'Calling Gemini, OpenAI, or Claude SDKs directly from Android, Flutter, or Capacitor compiles your paid secret key straight into classes.dex or assets/.',
+      'When troubleshooting TLS handshake bugs, AI assistants frequently recommend insecure TrustAllCerts, SslErrorHandler.proceed(), or usesCleartextTraffic="true"—exposing 100% of API traffic to MitM interception.',
+      'Enable R8 minification, strip Log.d/Log.v auth logs, add FLAG_SECURE on sensitive screens, verify /.well-known/assetlinks.json, and scan your release .apk/.aab before Play Store submission.',
+    ],
+    sections: [
+      {
+        heading: 'The 5-Second Reality Check on AI-Built Mobile Apps',
+        body: [
+          'Building Android apps using AI assistants inside Android Studio Gemini, Cursor, FlutterFlow, or Capacitor feels effortless—until your app hits a public store mirror. Unlike web backends where server logic stays private, an .apk or .aab file is shipped directly onto users devices.',
+          'Anyone can open your APK in JADX-GUI in 5 seconds and inspect every string, BuildConfig constant, WebView URL, and native library. Here are the 6 dangerous patterns AI tools repeatedly inject into mobile apps.',
+        ],
+      },
+      {
+        heading: 'Flaw 1: Direct LLM SDK Calls Compiled Inside classes.dex & Hermes/Dart',
+        body: [
+          'The official AI quick-start docs are built for prototypes—showing code like GenerativeModel("gemini-flash", apiKey = "AIza...") or fetch("https://api.openai.com/v1/chat/completions") directly inside mobile UI code.',
+          'Neither ProGuard/R8, Flutter AOT compilation, nor React Native Hermes encrypts string literals. Attackers dump AIza... and sk-... tokens from compiled binaries automatically and resell them online.',
+        ],
+      },
+      {
+        heading: 'Flaw 2: AI "Quick Fix" SSL Bypasses & Cleartext HTTP',
+        body: [
+          'When developers paste an emulator SSLHandshakeException into an AI chat, the model commonly replies with a snippet implementing an empty X509TrustManager, a HostnameVerifier that always returns true, SslErrorHandler.proceed() in WebView, or android:usesCleartextTraffic="true".',
+          'Shipping that temporary snippet to release silently disables HTTPS verification for all users—and Google Play rejects apps containing permissive TrustManagers or SslErrorHandler.proceed().',
+        ],
+      },
+      {
+        heading: 'Flaw 3: Disabled R8 Obfuscation & Release Logcat Token Leaks',
+        body: [
+          'Default Gradle templates generated alongside AI features frequently leave minifyEnabled false in release buildTypes, and developers leave AI-added debug calls such as Log.d("AUTH_DEBUG", "JWT=" + token).',
+          'Full class/method symbols stay readable, and sensitive auth tokens leak into device Logcat buffers.',
+        ],
+      },
+      {
+        heading: 'Flaw 4: Permissive WebView Bridges & Exported IPC Components',
+        body: [
+          'In Capacitor, Ionic, and hybrid WebView apps, AI agents routinely enable server.cleartext: true, android.webContentsDebuggingEnabled: true, or add android:exported="true" to Services and BroadcastReceivers without signature permissions.',
+          'Other malicious apps installed on the same Android phone can trigger exported components via crafted Intents or exploit WebView JavaScript bridges.',
+        ],
+      },
+      {
+        heading: 'Flaw 5: Event-Only BiometricPrompt, allowBackup="true" & Missing FLAG_SECURE',
+        body: [
+          'When asked to "add fingerprint login," AI typically outputs BiometricPrompt.authenticate(promptInfo) without binding an AndroidKeyStore CryptoObject—which instrumentation tools like Frida can hook in seconds.',
+          'Combined with default android:allowBackup="true" and missing WindowManager.LayoutParams.FLAG_SECURE, private databases and screen previews become easy targets on compromised or USB-debugged devices.',
+        ],
+      },
+      {
+        heading: 'Flaw 6: Missing /.well-known/assetlinks.json & Open Storage Buckets',
+        body: [
+          'AI tools happily generate <intent-filter android:autoVerify="true"> for OAuth redirects and direct S3/GCS upload URLs, yet forget to configure the server-side Digital Asset Links JSON or bucket Block Public Access.',
+        ],
+        bullets: [
+          'Never call OpenAI, Gemini, or Claude directly with secret keys inside mobile binaries—route all AI traffic through your authenticated HTTPS backend.',
+          'Eliminate TrustAll TrustManagers, SslErrorHandler.proceed(), and cleartext HTTP flags; enforce TLS pinning cleanly via network_security_config.xml.',
+          'Enable R8 minifyEnabled true + shrinkResources true and strip android.util.Log debug logs in proguard-rules.pro.',
+          'Audit your release .apk or .aab on CheckMyAPK to test DEX bytecode, Maven OSV CVEs, S3/GCS buckets, Biometric CryptoObject binding, and assetlinks.json automatically.',
+        ],
+      },
+    ],
+    codeDiff: {
+      filename: 'MobileAiClient.kt + proguard-rules.pro + AndroidManifest.xml',
+      language: 'kotlin',
+      before: `// ❌ AI Prototype Anti-Patterns (Leaks Key + Disables TLS Security + Exposed Logs):
+val model = GenerativeModel(modelName = "gemini-2.5-flash", apiKey = "AIzaSyLiveKeyCompiledIntoApk")
+Log.d("AI_AUTH", "User JWT=" + sessionToken)
+// In AndroidManifest.xml: android:usesCleartextTraffic="true" android:allowBackup="true"`,
+      after: `// ✅ Production-Hardened Mobile Architecture:
+// 1. Mobile calls YOUR authenticated HTTPS backend proxy (zero AI keys inside APK/AAB):
+val response = apiClient.post("https://api.yourapp.com/v1/ai-assist") {
+    header("Authorization", "Bearer " + userSessionJwt)
+}
+
+// 2. Enforce FLAG_SECURE + strict TLS + strip Logcat in proguard-rules.pro:
+window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+// proguard-rules.pro: -assumenosideeffects class android.util.Log { public static int d(...); }`,
+      verifyCommand: 'Upload app-release.apk or app-release.aab to CheckMyAPK.com -> Check DEX Bytecode & MASVS Report',
+    },
+    faqs: [
+      {
+        q: 'Can hackers steal my OpenAI or Gemini API key from an Android APK or AAB?',
+        a: 'Yes. Even release APKs built with R8, Flutter AOT, or React Native Hermes preserve readable API key strings inside classes.dex, resources.arsc, libapp.so, or index.android.bundle. Anyone can extract them in seconds unless all AI calls go through your backend.',
+      },
+      {
+        q: 'Why do AI coding tools cause Android SSL TrustManager or Play Console rejections?',
+        a: 'To fix self-signed or local testing certificate errors quickly, AI models often generate empty X509TrustManager or SslErrorHandler.proceed() implementations, which violate OWASP MASVS-NETWORK-1 and trigger automated Google Play security alerts.',
+      },
+      {
+        q: 'How can I audit my AI-built Android app before submitting to Google Play?',
+        a: 'Upload your compiled .apk or .aab binary to CheckMyAPK.com. In under 15 seconds, it runs 60+ static and Stage-3 checks including Dalvik taint tracking, native .so ELF hardening, Maven OSV CVEs, BiometricPrompt CryptoObject verification, and assetlinks.json validation.',
+      },
+    ],
+  },
+  {
     slug: 'check-android-apk-for-leaked-api-keys',
     title: 'How to Check an Android APK for Leaked API Keys & Hardcoded Secrets',
     metaTitle: 'How to Check an Android APK for Leaked API Keys | CheckMyAPK',

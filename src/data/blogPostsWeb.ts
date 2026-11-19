@@ -2,6 +2,137 @@ import type { BlogPost } from './blogPostsApk';
 
 export const WEB_BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'ai-built-web-apps-security-flaws-vibe-coding-checklist',
+    title:
+      'Built Your App with AI (Cursor, Bolt, Lovable, v0)? 7 Silent Security Flaws That Get Vibe-Coded Apps Hacked in 24 Hours',
+    metaTitle: '7 Security Flaws in AI-Built & Vibe-Coded Web Apps | CheckMyAPK',
+    metaDescription:
+      'Built your website or SaaS with Cursor, Bolt.new, Lovable, or v0? Discover the 7 hidden security flaws AI coding tools leave behind—exposed keys, open RLS, Denial-of-Wallet, CORS—and fix them fast.',
+    category: 'Web & API',
+    owaspRef: 'OWASP-A01 / API04',
+    publishedAt: '2026-11-19',
+    readTime: '8 min read',
+    keywords: [
+      'AI built app security flaws',
+      'vibe coding security checklist',
+      'Cursor Bolt Lovable security vulnerabilities',
+      'secure AI generated web app',
+      'Denial of Wallet AI API attack',
+      'AI SaaS security audit',
+    ],
+    excerpt:
+      'AI coding agents optimize for one thing: making your demo work fast—not making it survive the public internet. In our audits of vibe-coded SaaS apps, over 60% ship with at least one Critical security backdoor on Day 1.',
+    summaryPoints: [
+      'AI assistants frequently implement authorization only in React/Next.js UI components while leaving backend /api/* endpoints completely unauthenticated.',
+      'Quick-start prompts often expose OPENAI_API_KEY, GEMINI_API_KEY, or Supabase service_role secrets via VITE_ / NEXT_PUBLIC_ client bundles.',
+      'Open CORS origin: true, unguarded LLM endpoints without rate limiting (Denial-of-Wallet), and raw dangerouslySetInnerHTML Markdown rendering enable instant takeover and billing spikes.',
+    ],
+    sections: [
+      {
+        heading: 'Why AI-Generated Web Apps Get Hacked Within Hours of Launch',
+        body: [
+          'Tools like Cursor, Bolt.new, Lovable, Replit Agent, and v0 let a single founder build and deploy a full SaaS product in an afternoon. But when you prompt an AI to "just make login, AI chat, and payments work," the model optimizes purely for the happy path.',
+          'Automated scanner bots monitor newly deployed Vercel, Netlify, and Railway subdomains looking specifically for vibe-coded security shortcuts. Below are the 7 most common vulnerabilities CheckMyAPK finds in AI-built web apps.',
+        ],
+      },
+      {
+        heading: 'Flaw 1: Frontend-Only Auth & Unprotected API Routes',
+        body: [
+          'A classic AI coding mistake is hiding admin panels or premium buttons behind a client-side conditional like if (user.role === "admin"), while never checking the JWT session cookie inside POST /api/admin/delete-user or POST /api/billing/upgrade.',
+          'Anyone can inspect your JavaScript bundle, discover the /api/* route, and call it directly with curl without ever touching your UI.',
+        ],
+      },
+      {
+        heading: 'Flaw 2: Client-Exposed VITE_ & NEXT_PUBLIC_ AI Keys',
+        body: [
+          'When a browser test hits a CORS or missing-env error, developers often copy their API key into VITE_GEMINI_API_KEY or NEXT_PUBLIC_OPENAI_KEY as suggested by a quick snippet.',
+          'Everything prefixed with VITE_ or NEXT_PUBLIC_ is compiled straight into public .js chunks served to every visitor—letting bots drain your OpenAI, Claude, Gemini, or Stripe balance overnight.',
+        ],
+      },
+      {
+        heading: 'Flaw 3: "Demo Mode" Open Supabase RLS & Firebase Rules',
+        body: [
+          'AI assistants regularly suggest disabling Row Level Security (RLS) in Supabase or setting ".read": true, ".write": true in Firebase to "fix permission denied errors while testing."',
+          'Because your Supabase anon key ships publicly in frontend code, open RLS lets anyone query /rest/v1/users?select=* and download your entire customer database.',
+        ],
+      },
+      {
+        heading: 'Flaw 4: Zero Rate Limiting on AI Endpoints (Denial-of-Wallet)',
+        body: [
+          'Unlike traditional CRUD endpoints where extra requests only consume pennies of CPU, an unthrottled /api/chat or /api/generate route executes paid LLM tokens or GPU image generation per HTTP hit.',
+          'Without per-IP and per-user rate limiting (HTTP 429) plus monthly user quota guards, a 5-line script can run thousands of completions and wipe out your cloud credits.',
+        ],
+      },
+      {
+        heading: 'Flaw 5: Wildcard CORS & Missing CSP / HSTS Headers',
+        body: [
+          'To stop local dev CORS errors quickly, AI agents love writing app.use(cors({ origin: true, credentials: true })). In production, reflecting arbitrary Origin headers alongside credentials lets any malicious site hijack authenticated user API responses.',
+          'At the same time, generated vercel.json or next.config.js files rarely ship Content-Security-Policy, HSTS, or X-Frame-Options.',
+        ],
+      },
+      {
+        heading: 'Flaw 6: Unsanitized LLM Markdown Rendering (DOM XSS)',
+        body: [
+          'AI chat interfaces frequently render model or user strings with dangerouslySetInnerHTML or element.innerHTML = replyHtml without passing content through DOMPurify.',
+          'Paired with missing CSP headers and JWTs stored in localStorage, a single stored XSS vector escalates directly into full session hijacking.',
+        ],
+      },
+      {
+        heading: 'Flaw 7: Vulnerable Dependencies (OSV CVEs) & Public Source Maps',
+        body: [
+          'LLMs trained on older codebases frequently pin outdated versions of lodash, axios, or marked with known CVE advisories, and leave production source maps (.js.map) or .env dotfiles accessible.',
+        ],
+        bullets: [
+          'Move every paid LLM, email, and database admin key exclusively to server-side process.env routes.',
+          'Require verified HTTP-only session authentication + per-IP rate limiting on every /api/* handler.',
+          'Sanitize all dynamic HTML/Markdown output with DOMPurify and enforce CSP, HSTS, and strict CORS allowlists.',
+          'Verify your live URL across 60+ OWASP & OSV.dev rules on CheckMyAPK before sharing your launch link.',
+        ],
+      },
+    ],
+    codeDiff: {
+      filename: 'server/routes/ai-chat.ts (Hardened Vibe-Coded API Route)',
+      language: 'typescript',
+      before: `// ❌ Typical AI-generated vulnerable setup:
+// 1. Key leaked in frontend or unauthenticated backend route
+// 2. Reflection CORS + no rate limit + unescaped HTML render
+app.use(cors({ origin: true, credentials: true }));
+app.post('/api/chat', async (req, res) => {
+  const aiRes = await callGemini(process.env.GEMINI_API_KEY, req.body.prompt);
+  res.json({ html: aiRes }); // rendered via dangerouslySetInnerHTML without DOMPurify!
+});`,
+      after: `// ✅ Hardened Production AI Route:
+import rateLimit from 'express-rate-limit';
+import DOMPurify from 'isomorphic-dompurify';
+
+const ALLOWED = new Set(['https://yourdomain.com']);
+app.use(cors({ origin: (o, cb) => cb(null, !o || ALLOWED.has(o)), credentials: true }));
+
+const aiLimiter = rateLimit({ windowMs: 60 * 1000, max: 15, standardHeaders: true });
+
+app.post('/api/chat', requireVerifiedUser, aiLimiter, async (req, res) => {
+  const userPrompt = String(req.body?.prompt || '').slice(0, 2000);
+  const rawReply = await callGemini(process.env.GEMINI_API_KEY!, userPrompt);
+  res.json({ replyHtml: DOMPurify.sanitize(rawReply) });
+});`,
+      verifyCommand: 'npx checkmyapk-scan https://yourdomain.com  # Or run a free 60+ rule audit at CheckMyAPK.com',
+    },
+    faqs: [
+      {
+        q: 'Are apps built with Cursor, Bolt.new, Lovable, or v0 safe for production?',
+        a: 'They are great starting architectures, but AI coding agents prioritize speed over defense-in-depth. You should always verify server-side auth, RLS rules, secret isolation, rate limiting, and security headers before handling real users or payments.',
+      },
+      {
+        q: 'How do I check my AI-built site for security flaws in 10 seconds?',
+        a: 'Paste your live deployment URL into CheckMyAPK.com. Our non-destructive engine checks JS bundles for leaked AI/Supabase keys, probes OSV.dev CVE dependencies, tests CORS reflection, checks S3/GCS buckets, and correlates compound attack chains.',
+      },
+      {
+        q: 'What is a Denial-of-Wallet attack on AI apps?',
+        a: 'A Denial-of-Wallet (OWASP API04) attack occurs when bots flood unprotected LLM or cloud inference API routes that lack authentication or rate limiting, intentionally triggering massive pay-per-token API bills without crashing your server.',
+      },
+    ],
+  },
+  {
     slug: 'restrict-exposed-firebase-gemini-api-keys',
     title: 'Exposed Firebase & Gemini (AIza) API Keys: How Attackers Drain Your GCP Bill',
     metaTitle: 'How to Restrict Exposed Firebase & Gemini AIza API Keys | CheckMyAPK',
