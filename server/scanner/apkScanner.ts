@@ -3,6 +3,14 @@ import crypto from 'crypto';
 import { analyzeDexBytecode, type DexBytecodeGraphSummary } from './dexAnalyzer.ts';
 import { scanNativeElfLibraries, extractPrintableAscii, type NativeElfSummary } from './elfScanner.ts';
 import { probeGeminiKeyLive } from './keyScanner.ts';
+import { extractMavenVersionsFromZipEntries, type OsvQueryPackage } from './osvCveScanner.ts';
+
+export interface DeepLinkTarget {
+  host: string;
+  scheme: string;
+  autoVerify: boolean;
+  component: string;
+}
 
 export interface ApkFinding {
   category: string;
@@ -36,6 +44,7 @@ export interface ExportedComponentsSummary {
 
 export interface ApkScanResult {
   packageName: string;
+  isAppBundle?: boolean;
   appTitle?: string;
   versionName?: string;
   versionCode?: number;
@@ -50,6 +59,10 @@ export interface ApkScanResult {
   permissions: string[];
   findings: ApkFinding[];
   exportedComponents?: ExportedComponentsSummary;
+  deepLinkTargets?: DeepLinkTarget[];
+  signingCertSha256s?: string[];
+  mavenDependencies?: OsvQueryPackage[];
+  extractedStorageText?: string[];
   trackers?: string[];
   sdks?: string[];
   discoveredEndpoints?: string[];
@@ -263,9 +276,13 @@ function parseAxml(buf: Buffer) {
     const attributes: Array<{ element: string; name: string; value: any }> = [];
     const permissions: string[] = [];
     const components: RawManifestComponent[] = [];
+    const deepLinkTargets: DeepLinkTarget[] = [];
     const elemStack: string[] = [];
     let activeComp: RawManifestComponent | null = null;
     let inIntentFilter = false;
+    let intentAutoVerify = false;
+    let filterSchemes: string[] = [];
+    let filterHosts: string[] = [];
     let packageName = 'com.android.app';
     let versionName = '1.0';
     let versionCode = 1;
@@ -303,7 +320,13 @@ function parseAxml(buf: Buffer) {
         } else if (activeComp && elemName === 'intent-filter') {
           activeComp.hasIntentFilter = true;
           inIntentFilter = true;
+          intentAutoVerify = false;
+          filterSchemes = [];
+          filterHosts = [];
         }
+
+        let dataScheme = '';
+        let dataHost = '';
 
         for (let a = 0; a < attrCount; a++) {
           const attrNameIdx = buf.readUInt32LE(attrPos + 4);
@@ -337,20 +360,51 @@ function parseAxml(buf: Buffer) {
                 if (typeof attrValue === 'string' && attrValue) activeComp.permission = attrValue;
               }
             } else if (inIntentFilter) {
-              if (elemName === 'action' && attrName === 'name') activeComp.actions.push(String(attrValue));
-              else if (elemName === 'category' && attrName === 'name') activeComp.categories.push(String(attrValue));
-              else if (elemName === 'data' && attrName === 'scheme') activeComp.schemes.push(String(attrValue));
+              if (elemName === 'intent-filter' && attrName === 'autoVerify' && attrValue === true) {
+                intentAutoVerify = true;
+              } else if (elemName === 'action' && attrName === 'name') {
+                activeComp.actions.push(String(attrValue));
+              } else if (elemName === 'category' && attrName === 'name') {
+                activeComp.categories.push(String(attrValue));
+              } else if (elemName === 'data') {
+                if (attrName === 'scheme') {
+                  dataScheme = String(attrValue);
+                  activeComp.schemes.push(dataScheme);
+                  filterSchemes.push(dataScheme);
+                } else if (attrName === 'host') {
+                  dataHost = String(attrValue);
+                  filterHosts.push(dataHost);
+                }
+              }
             }
           }
 
           attributes.push({ element: elemName, name: attrName, value: attrValue });
           attrPos += 20;
         }
+
+        if (activeComp && inIntentFilter && elemName === 'data' && dataHost) {
+          const scheme = dataScheme || filterSchemes.find(s => /^https?$/i.test(s)) || filterSchemes[0] || 'https';
+          deepLinkTargets.push({
+            host: dataHost,
+            scheme,
+            autoVerify: intentAutoVerify,
+            component: activeComp.name || '(activity)'
+          });
+        }
       } else if (tag === 0x0103) { // RES_XML_END_ELEMENT_TYPE
         const endNameIdx = buf.readUInt32LE(pos + 20);
         const endElemName = strings[endNameIdx] || '';
         if (elemStack.length > 0) elemStack.pop();
         if (activeComp && endElemName === 'intent-filter') {
+          if (filterHosts.length > 0 && deepLinkTargets.length > 0) {
+            const hasHttps = filterSchemes.some(s => s.toLowerCase() === 'https');
+            for (const d of deepLinkTargets) {
+              if (d.component === (activeComp.name || '(activity)') && hasHttps && d.scheme !== 'https') {
+                d.scheme = 'https';
+              }
+            }
+          }
           inIntentFilter = false;
         } else if (activeComp && endElemName === activeComp.rawTag && elemStack.length === activeComp.depth) {
           components.push(activeComp);
@@ -361,27 +415,300 @@ function parseAxml(buf: Buffer) {
       pos += size;
     }
 
-    return { strings, permissions, attributes, components, packageName, versionName, versionCode };
+    return { strings, permissions, attributes, components, deepLinkTargets, packageName, versionName, versionCode };
   } catch (e) {
-    return { strings: [], permissions: [], attributes: [], components: [], packageName: 'unknown.package', versionName: '1.0', versionCode: 1 };
+    return { strings: [], permissions: [], attributes: [], components: [], deepLinkTargets: [], packageName: 'unknown.package', versionName: '1.0', versionCode: 1 };
   }
+}
+
+function readProtoVarint(buf: Buffer, offset: number): { val: number; next: number } | null {
+  let result = 0;
+  let shift = 0;
+  let pos = offset;
+  while (pos < buf.length && shift <= 35) {
+    const b = buf[pos++];
+    result |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) {
+      return { val: result >>> 0, next: pos };
+    }
+    shift += 7;
+  }
+  return null;
+}
+
+function iterProtoFields(
+  buf: Buffer,
+  start: number,
+  end: number,
+  onField: (fieldNum: number, wireType: number, sliceOrVal: Buffer | number) => void
+) {
+  let pos = start;
+  while (pos < end) {
+    const tag = readProtoVarint(buf, pos);
+    if (!tag) break;
+    pos = tag.next;
+    const fieldNum = tag.val >>> 3;
+    const wireType = tag.val & 0x07;
+    if (fieldNum === 0) break;
+
+    if (wireType === 0) {
+      const v = readProtoVarint(buf, pos);
+      if (!v) break;
+      pos = v.next;
+      onField(fieldNum, wireType, v.val);
+    } else if (wireType === 1) {
+      if (pos + 8 > end) break;
+      pos += 8;
+    } else if (wireType === 2) {
+      const len = readProtoVarint(buf, pos);
+      if (!len) break;
+      pos = len.next;
+      if (pos + len.val > end) break;
+      onField(fieldNum, wireType, buf.subarray(pos, pos + len.val));
+      pos += len.val;
+    } else if (wireType === 5) {
+      if (pos + 4 > end) break;
+      pos += 4;
+    } else {
+      break;
+    }
+  }
+}
+
+function parseProtoPrimitive(compiledItemBuf: Buffer): any {
+  let primVal: any = undefined;
+  iterProtoFields(compiledItemBuf, 0, compiledItemBuf.length, (fNum, wType, data) => {
+    // Item.prim = 4 (or Primitive direct value)
+    if (fNum === 4 && wType === 2 && Buffer.isBuffer(data)) {
+      iterProtoFields(data, 0, data.length, (pf, pw, pd) => {
+        if (pw === 0 && typeof pd === 'number') {
+          if (pf === 8) primVal = pd !== 0; // boolean_value
+          else if (pf === 6 || pf === 7) primVal = pd; // int_decimal / int_hexadecimal
+        }
+      });
+    }
+  });
+  return primVal;
+}
+
+function parseProtoXmlManifest(buf: Buffer) {
+  const strings: string[] = [];
+  const permissions: string[] = [];
+  const attributes: Array<{ element: string; name: string; value: any }> = [];
+  const components: RawManifestComponent[] = [];
+  const deepLinkTargets: DeepLinkTarget[] = [];
+  let packageName = 'com.android.app';
+  let versionName = '1.0';
+  let versionCode = 1;
+
+  const visitElement = (
+    elemBuf: Buffer,
+    activeComp: RawManifestComponent | null,
+    filterCtx: { active: boolean; autoVerify: boolean; schemes: string[]; hosts: string[] }
+  ) => {
+    let elemName = '';
+    const elemAttrs: Array<{ name: string; value: any }> = [];
+    const childNodes: Buffer[] = [];
+
+    iterProtoFields(elemBuf, 0, elemBuf.length, (fNum, wType, data) => {
+      if (fNum === 3 && wType === 2 && Buffer.isBuffer(data)) {
+        elemName = data.toString('utf8');
+        if (elemName) strings.push(elemName);
+      } else if (fNum === 4 && wType === 2 && Buffer.isBuffer(data)) {
+        let aName = '';
+        let aStrVal: string | undefined;
+        let aPrimVal: any;
+        iterProtoFields(data, 0, data.length, (af, aw, ad) => {
+          if (af === 2 && aw === 2 && Buffer.isBuffer(ad)) aName = ad.toString('utf8');
+          else if (af === 3 && aw === 2 && Buffer.isBuffer(ad)) aStrVal = ad.toString('utf8');
+          else if (af === 6 && aw === 2 && Buffer.isBuffer(ad)) aPrimVal = parseProtoPrimitive(ad);
+        });
+        let finalVal: any = aPrimVal !== undefined ? aPrimVal : aStrVal ?? '';
+        if (typeof finalVal === 'string') {
+          if (finalVal === 'true') finalVal = true;
+          else if (finalVal === 'false') finalVal = false;
+          else if (/^\d+$/.test(finalVal) && (aName.includes('Sdk') || aName === 'versionCode')) {
+            finalVal = Number(finalVal);
+          }
+          if (finalVal) strings.push(String(finalVal));
+        }
+        elemAttrs.push({ name: aName, value: finalVal });
+      } else if (fNum === 5 && wType === 2 && Buffer.isBuffer(data)) {
+        childNodes.push(data);
+      }
+    });
+
+    if (!elemName) return;
+
+    let currentComp = activeComp;
+    let isCompRoot = false;
+    if (
+      elemName === 'activity' ||
+      elemName === 'activity-alias' ||
+      elemName === 'service' ||
+      elemName === 'receiver' ||
+      elemName === 'provider'
+    ) {
+      const normalizedType: RawManifestComponent['componentType'] =
+        elemName === 'activity-alias' ? 'activity' : (elemName as RawManifestComponent['componentType']);
+      currentComp = {
+        rawTag: elemName,
+        depth: 1,
+        componentType: normalizedType,
+        name: '',
+        exported: null,
+        permission: null,
+        hasIntentFilter: false,
+        actions: [],
+        categories: [],
+        schemes: []
+      };
+      isCompRoot = true;
+    }
+
+    let nextFilter = filterCtx;
+    if (currentComp && elemName === 'intent-filter') {
+      currentComp.hasIntentFilter = true;
+      nextFilter = { active: true, autoVerify: false, schemes: [], hosts: [] };
+    }
+
+    let dataScheme = '';
+    let dataHost = '';
+
+    for (const a of elemAttrs) {
+      attributes.push({ element: elemName, name: a.name, value: a.value });
+
+      if (elemName === 'manifest') {
+        if (a.name === 'package') packageName = String(a.value);
+        else if (a.name === 'versionName') versionName = String(a.value);
+        else if (a.name === 'versionCode' && typeof a.value === 'number') versionCode = a.value;
+      } else if (elemName === 'uses-permission' && a.name === 'name') {
+        permissions.push(String(a.value));
+      }
+
+      if (currentComp) {
+        if (isCompRoot) {
+          if (a.name === 'name') currentComp.name = String(a.value);
+          else if (a.name === 'exported' && typeof a.value === 'boolean') currentComp.exported = a.value;
+          else if (a.name === 'permission' || a.name === 'readPermission' || a.name === 'writePermission') {
+            if (a.value) currentComp.permission = String(a.value);
+          }
+        } else if (nextFilter.active) {
+          if (elemName === 'intent-filter' && a.name === 'autoVerify' && a.value === true) {
+            nextFilter.autoVerify = true;
+          } else if (elemName === 'action' && a.name === 'name') {
+            currentComp.actions.push(String(a.value));
+          } else if (elemName === 'category' && a.name === 'name') {
+            currentComp.categories.push(String(a.value));
+          } else if (elemName === 'data') {
+            if (a.name === 'scheme') {
+              dataScheme = String(a.value);
+              currentComp.schemes.push(dataScheme);
+              nextFilter.schemes.push(dataScheme);
+            } else if (a.name === 'host') {
+              dataHost = String(a.value);
+              nextFilter.hosts.push(dataHost);
+            }
+          }
+        }
+      }
+    }
+
+    if (currentComp && nextFilter.active && elemName === 'data' && dataHost) {
+      const scheme = dataScheme || nextFilter.schemes.find(s => /^https?$/i.test(s)) || nextFilter.schemes[0] || 'https';
+      deepLinkTargets.push({
+        host: dataHost,
+        scheme,
+        autoVerify: nextFilter.autoVerify,
+        component: currentComp.name || '(activity)'
+      });
+    }
+
+    for (const childNodeBuf of childNodes) {
+      iterProtoFields(childNodeBuf, 0, childNodeBuf.length, (nf, nw, nd) => {
+        if (nf === 1 && nw === 2 && Buffer.isBuffer(nd)) {
+          visitElement(nd, currentComp, nextFilter);
+        }
+      });
+    }
+
+    if (isCompRoot && currentComp) {
+      components.push(currentComp);
+    }
+  };
+
+  try {
+    iterProtoFields(buf, 0, buf.length, (fNum, wType, data) => {
+      if (fNum === 1 && wType === 2 && Buffer.isBuffer(data)) {
+        visitElement(data, null, { active: false, autoVerify: false, schemes: [], hosts: [] });
+      }
+    });
+  } catch {}
+
+  return { strings, permissions, attributes, components, deepLinkTargets, packageName, versionName, versionCode };
+}
+
+function parseManifestBuffer(buf: Buffer) {
+  if (buf.length >= 4 && buf.readUInt32LE(0) === 0x00080003) {
+    return parseAxml(buf);
+  }
+  return parseProtoXmlManifest(buf);
+}
+
+function extractApkSigningCertSha256s(apkBuffer: Buffer, metaEntries: AdmZip.IZipEntry[]): string[] {
+  const fingerprints = new Set<string>();
+  const scanCertDer = (buf: Buffer) => {
+    // Locate X.509 certificate ASN.1 Sequence prefix wrapping v3 (0xA0 0x03 0x02 0x01 0x02)
+    for (let i = 0; i < buf.length - 64 && fingerprints.size < 3; i++) {
+      if (buf[i] === 0x30 && buf[i + 1] === 0x82) {
+        const outerLen = buf.readUInt16BE(i + 2) + 4;
+        if (outerLen > 128 && i + outerLen <= buf.length && outerLen <= 8192) {
+          const slice = buf.subarray(i, i + outerLen);
+          try {
+            const cert = new crypto.X509Certificate(slice);
+            if (cert.fingerprint256) {
+              fingerprints.add(cert.fingerprint256.toUpperCase());
+              i += outerLen - 1;
+            }
+          } catch {}
+        }
+      }
+    }
+  };
+
+  for (const me of metaEntries) {
+    if (/\.(?:RSA|DSA|EC)$/i.test(me.entryName)) {
+      const mb = safeEntryData(me);
+      if (mb) scanCertDer(mb);
+    }
+  }
+
+  if (fingerprints.size === 0) {
+    const sigBlockIdx = apkBuffer.indexOf('APK Sig Block 42');
+    if (sigBlockIdx > 256) {
+      const sigRegion = apkBuffer.subarray(Math.max(0, sigBlockIdx - 65536), sigBlockIdx);
+      scanCertDer(sigRegion);
+    }
+  }
+
+  return Array.from(fingerprints);
 }
 
 export function peekApkPackageName(apkBuffer: Buffer, fallbackName = 'application.apk'): string {
   try {
     const zip = new AdmZip(apkBuffer);
-    const manifestEntry = zip.getEntry('AndroidManifest.xml');
+    const manifestEntry = zip.getEntry('AndroidManifest.xml') || zip.getEntry('base/manifest/AndroidManifest.xml');
     if (manifestEntry) {
       const mBuf = safeEntryData(manifestEntry);
       if (mBuf) {
-        const parsed = parseAxml(mBuf);
+        const parsed = parseManifestBuffer(mBuf);
         if (parsed?.packageName && parsed.packageName !== 'unknown.package') {
           return parsed.packageName;
         }
       }
     }
   } catch {}
-  return fallbackName.replace(/\.apk$/i, '') || 'com.android.app';
+  return fallbackName.replace(/\.(?:apk|aab)$/i, '') || 'com.android.app';
 }
 
 export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promise<ApkScanResult> {
@@ -390,10 +717,12 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   const fileNames = entries.map(e => e.entryName);
 
   const findings: ApkFinding[] = [];
+  const isAppBundle =
+    !zip.getEntry('AndroidManifest.xml') && Boolean(zip.getEntry('base/manifest/AndroidManifest.xml'));
 
   // 1. Detect Framework
-  let frameworkDetected = 'Native Android (Java/Kotlin)';
-  if (fileNames.some(f => f.includes('libflutter.so') || f.startsWith('assets/flutter_assets/'))) {
+  let frameworkDetected = isAppBundle ? 'Android App Bundle (Native / Multi-ABI)' : 'Native Android (Java/Kotlin)';
+  if (fileNames.some(f => f.includes('libflutter.so') || f.includes('assets/flutter_assets/'))) {
     frameworkDetected = 'Flutter';
   } else if (fileNames.some(f => f.includes('index.android.bundle') || f.includes('libhermes.so'))) {
     frameworkDetected = 'React Native';
@@ -405,18 +734,19 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
 
   // 2. Detect CPU Architectures
   const architectures: string[] = [];
-  if (fileNames.some(f => f.startsWith('lib/arm64-v8a/'))) architectures.push('arm64-v8a (64-bit)');
-  if (fileNames.some(f => f.startsWith('lib/armeabi-v7a/'))) architectures.push('armeabi-v7a (32-bit)');
-  if (fileNames.some(f => f.startsWith('lib/x86_64/'))) architectures.push('x86_64');
-  if (fileNames.some(f => f.startsWith('lib/x86/'))) architectures.push('x86');
+  if (fileNames.some(f => f.includes('lib/arm64-v8a/'))) architectures.push('arm64-v8a (64-bit)');
+  if (fileNames.some(f => f.includes('lib/armeabi-v7a/'))) architectures.push('armeabi-v7a (32-bit)');
+  if (fileNames.some(f => f.includes('lib/x86_64/'))) architectures.push('x86_64');
+  if (fileNames.some(f => f.includes('lib/x86/'))) architectures.push('x86');
 
-  // 3. Parse AndroidManifest.xml
-  const manifestEntry = zip.getEntry('AndroidManifest.xml');
+  // 3. Parse AndroidManifest.xml (AXML for .apk OR Protobuf XML for .aab)
+  const manifestEntry = zip.getEntry('AndroidManifest.xml') || zip.getEntry('base/manifest/AndroidManifest.xml');
   let parsedManifest: any = {
     strings: [],
     permissions: [],
     attributes: [],
     components: [],
+    deepLinkTargets: [],
     packageName: 'com.android.app',
     versionName: '1.0',
     versionCode: 1
@@ -424,11 +754,12 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   
   if (manifestEntry) {
     const mBuf = safeEntryData(manifestEntry);
-    if (mBuf) parsedManifest = parseAxml(mBuf);
+    if (mBuf) parsedManifest = parseManifestBuffer(mBuf);
   }
 
   const { attributes, permissions, packageName, versionName, versionCode } = parsedManifest;
   const rawComponents: RawManifestComponent[] = parsedManifest.components || [];
+  const deepLinkTargets: DeepLinkTarget[] = parsedManifest.deepLinkTargets || [];
 
   // Extract SDK Versions cleanly (never fabricate 33 when omitted)
   const minSdkAttr = attributes.find((a: any) => a.name === 'minSdkVersion');
@@ -607,6 +938,7 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   const weakCryptoSignals = new Set<string>();
   const cleartextHttpUrls = new Set<string>();
   const baasUrlSet = new Set<string>();
+  const extractedStorageTextSet = new Set<string>();
   const discoveredEndpointMap = new Map<string, { url: string; priority: number }>();
 
   const URL_EXTRACT_REGEX = /https?:\/\/[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?::\d{2,5})?(?:\/[^\s"'<>\\`\x00-\x1f\x7f-\xff]*)?/g;
@@ -715,6 +1047,15 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
           if (host.endsWith('.firebaseio.com') || host.endsWith('.firebasedatabase.app') || host.endsWith('.supabase.co')) {
             baasUrlSet.add(parsed.origin);
           }
+          if (
+            host.includes('.s3.') ||
+            host.endsWith('.s3.amazonaws.com') ||
+            host === 's3.amazonaws.com' ||
+            host === 'storage.googleapis.com' ||
+            host.endsWith('.blob.core.windows.net')
+          ) {
+            extractedStorageTextSet.add(cleaned);
+          }
 
           if (parsed.protocol === 'http:') {
             const lowerPath = parsed.pathname.toLowerCase();
@@ -766,8 +1107,8 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     inspectTextChunk(dexText, dexEntry.entryName, false);
   }
 
-  // Also scan assets/ for leaked .env, config, JS bundles, or React Native Hermes .bundle files
-  const assetEntries = entries.filter(e => e.entryName.startsWith('assets/'));
+  // Also scan assets/ (or base/assets/ in AAB) for leaked .env, config, JS bundles, or React Native Hermes .bundle files
+  const assetEntries = entries.filter(e => e.entryName.startsWith('assets/') || e.entryName.includes('/assets/'));
   for (const aEntry of assetEntries) {
     const isJsOrConfig =
       aEntry.entryName.endsWith('.json') ||
@@ -806,7 +1147,7 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   }
 
   // ── AUDIT 6.5: Native ELF (.so) Hardening & Flutter/JNI String Inspection ──
-  const soEntries = entries.filter(e => e.entryName.startsWith('lib/') && e.entryName.endsWith('.so'));
+  const soEntries = entries.filter(e => (e.entryName.startsWith('lib/') || e.entryName.includes('/lib/')) && e.entryName.endsWith('.so'));
   const nativeElfAudit = scanNativeElfLibraries(soEntries);
   for (const chunk of nativeElfAudit.extractedStringChunks) {
     inspectTextChunk(chunk.text, chunk.sourceName, true);
@@ -816,7 +1157,7 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   }
 
   // Also inspect resources.arsc before final secret classification so all secrets & BaaS URLs unify cleanly
-  const arscEntry = zip.getEntry('resources.arsc');
+  const arscEntry = zip.getEntry('resources.arsc') || zip.getEntry('base/resources.arsc');
   if (arscEntry) {
     const arscBuf = safeEntryData(arscEntry);
     if (arscBuf) {
@@ -900,11 +1241,12 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     });
   }
 
-  // ── AUDIT 7: APK Keystore Signature Verification (v1 META-INF + v2/v3 APK Sig Block 42) ──
+  // ── AUDIT 7: APK Keystore Signature Verification (v1 META-INF + v2/v3 APK Sig Block 42 + AAB Play App Signing) ──
   const metaEntries = entries.filter(e => e.entryName.startsWith('META-INF/'));
   const hasV1CertFile = metaEntries.some((me) => /\.(?:RSA|DSA|EC|SF)$/i.test(me.entryName));
   const sigBlockMagicIdx = apkBuffer.indexOf('APK Sig Block 42');
   const hasV2V3SigBlock = sigBlockMagicIdx > 16;
+  const signingCertSha256s = extractApkSigningCertSha256s(apkBuffer, metaEntries);
 
   let isDebugSignature = false;
   for (const me of metaEntries) {
@@ -934,6 +1276,15 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
       description: 'Debug keystores are publicly known and insecure. Attackers can forge fake updates, bypass signatures, and tamper with binaries.',
       remediation: 'Sign your APK using a private, password-protected production keystore via Android Studio -> Generate Signed App Bundle.'
     });
+  } else if (!hasV1CertFile && !hasV2V3SigBlock && isAppBundle) {
+    findings.push({
+      category: 'Binary & Signing Security',
+      type: 'Android App Bundle (.aab) Upload Package Detected',
+      severity: 'PASS',
+      proof: 'Verified Android App Bundle container (base/manifest/AndroidManifest.xml); final APKs are signed by Google Play App Signing at distribution.',
+      description: 'Unsigned or upload-key AAB containers use Google Play App Signing before end-user installation.',
+      remediation: 'Ensure your Play Console Upload Key matches your CI keystore and keep Play App Signing enabled.'
+    });
   } else if (!hasV1CertFile && !hasV2V3SigBlock) {
     findings.push({
       category: 'Binary & Signing Security',
@@ -954,7 +1305,7 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
       category: 'Binary & Signing Security',
       type: `Production Keystore Signature Verified (${schemeLabel})`,
       severity: 'PASS',
-      proof: `Verified ${schemeLabel} signature presence with zero Android Debug / androiddebugkey certificates.`,
+      proof: `Verified ${schemeLabel} signature presence${signingCertSha256s[0] ? ` (SHA-256: ${signingCertSha256s[0]})` : ''} with zero Android Debug / androiddebugkey certificates.`,
       description: 'Binary is signed for distribution with non-debug release signing credentials.',
       remediation: 'Keep your release keystore file backed up securely in an encrypted vault.'
     });
@@ -1160,7 +1511,7 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   const baasJwtHints = Array.from(baasJwtHintSet).slice(0, 6);
 
   // ── AUDIT 11: Network Security Config XML & SSL Certificate Pinning Audit ──
-  const xmlResEntries = entries.filter(e => /^res\/xml\/.*\.xml$/i.test(e.entryName));
+  const xmlResEntries = entries.filter(e => /(?:^|\/)res\/xml\/.*\.xml$/i.test(e.entryName));
   let trustsUserCerts = false;
   let xmlCleartextPermitted = false;
   const pinningSignalsAll: string[] = [...(dexCfg.summary.pinningSignals || [])];
@@ -1168,7 +1519,7 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
   for (const xe of xmlResEntries) {
     const xBuf = safeEntryData(xe);
     if (!xBuf) continue;
-    const parsedXml = parseAxml(xBuf);
+    const parsedXml = parseManifestBuffer(xBuf);
     if (parsedXml.attributes.some(a => a.element === 'certificates' && a.name === 'src' && String(a.value) === 'user')) {
       trustsUserCerts = true;
     }
@@ -1273,10 +1624,19 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     if (!f.owaspRef) f.owaspRef = mapMasvsRef(f);
   }
 
+  const versionEntries = entries
+    .filter((e) => e.entryName.endsWith('.version') && e.entryName.includes('META-INF/'))
+    .map((e) => ({
+      entryName: e.entryName,
+      readText: () => safeEntryData(e)?.toString('utf8') || ''
+    }));
+  const mavenDependencies = extractMavenVersionsFromZipEntries(versionEntries);
+
   const sha256 = crypto.createHash('sha256').update(apkBuffer).digest('hex');
 
   return {
     packageName,
+    isAppBundle,
     versionName,
     versionCode,
     sha256,
@@ -1290,6 +1650,10 @@ export async function scanApkBuffer(apkBuffer: Buffer, fileName: string): Promis
     permissions,
     findings,
     exportedComponents: exportedSummary,
+    deepLinkTargets: deepLinkTargets.slice(0, 12),
+    signingCertSha256s,
+    mavenDependencies,
+    extractedStorageText: Array.from(extractedStorageTextSet).slice(0, 10),
     trackers,
     sdks,
     discoveredEndpoints,

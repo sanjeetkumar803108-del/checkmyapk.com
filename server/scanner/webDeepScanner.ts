@@ -37,6 +37,15 @@ export interface WebDeepSurfaceSummary {
   jwtAudits: JwtAuditItem[];
   robotsDisallowed: string[];
   sitemapCount: number;
+  activeDastChecks?: {
+    mode: 'verified-active' | 'passive-only';
+    routesAudited: number;
+    exposedDiagnostics: string[];
+    httpMethods: string[];
+    xForwardedHostReflected: boolean;
+    openRedirectParam: string | null;
+    unescapedReflection: boolean;
+  };
   authAudit?: {
     enabled: boolean;
     authKind: string;
@@ -655,8 +664,9 @@ export async function runWebDeepAudit(params: {
   collectedScripts: Array<{ url: string; content: string }>;
   authHeader?: string;
   authCookie?: string;
+  verifiedOrLocal?: boolean;
 }): Promise<WebDeepScanResult> {
-  const { targetUrl, html, initialStatus, collectedScripts, authHeader, authCookie } = params;
+  const { targetUrl, html, initialStatus, collectedScripts, authHeader, authCookie, verifiedOrLocal = false } = params;
   const findings: WebDeepFinding[] = [];
   let targetOrigin = '';
   try {
@@ -1048,6 +1058,305 @@ export async function runWebDeepAudit(params: {
     });
   }
 
+  // 5. Publicly Exposed Diagnostics / Actuator / Metrics & Sub-Route Header Consistency Audit
+  const exposedDiagnostics: string[] = [];
+  const diagCandidates: Array<{ path: string; method: 'GET' | 'HEAD'; matchFn: (res: any) => boolean; label: string }> = [
+    {
+      path: '/actuator/env',
+      method: 'GET',
+      label: 'Spring Boot /actuator/env',
+      matchFn: (r) => {
+        const s = typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '');
+        return r.status === 200 && !isHtmlDocument(s, r.headers['content-type']) && (s.includes('"propertySources"') || s.includes('"activeProfiles"'));
+      }
+    },
+    {
+      path: '/actuator/heapdump',
+      method: 'HEAD',
+      label: 'Spring Boot /actuator/heapdump',
+      matchFn: (r) =>
+        r.status === 200 &&
+        !/html|text/i.test(String(r.headers['content-type'] || '')) &&
+        Number(r.headers['content-length'] || 0) > 10000
+    },
+    {
+      path: '/metrics',
+      method: 'GET',
+      label: 'Prometheus /metrics',
+      matchFn: (r) => typeof r.data === 'string' && !isHtmlDocument(r.data, r.headers['content-type']) && /(?:^|\n)# (?:HELP|TYPE)\s+[a-zA-Z_:]+/m.test(r.data)
+    },
+    {
+      path: '/server-status',
+      method: 'GET',
+      label: 'Apache /server-status',
+      matchFn: (r) => typeof r.data === 'string' && /Apache Server Status|Server Version:/i.test(r.data)
+    }
+  ];
+
+  // Prioritize up to 4 sensitive sub-routes (login/admin/dashboard/account or discovered sitemap routes)
+  const prioritySubRoutes = Array.from(discoveredRoutes)
+    .filter((rt) => rt && rt !== '/' && rt.startsWith('/') && !rt.includes('{'))
+    .sort((a, b) => {
+      const score = (p: string) => (/(?:login|signin|auth|admin|account|dashboard|checkout)/i.test(p) ? 0 : 1);
+      return score(a) - score(b);
+    })
+    .slice(0, 4);
+
+  let routesAudited = 1; // Homepage
+  let subRouteHeaderGaps: string[] = [];
+
+  await Promise.all([
+    ...diagCandidates.map(async (diag) => {
+      try {
+        const res = await axios({
+          method: diag.method,
+          url: `${targetOrigin}${diag.path}`,
+          timeout: 2600,
+          httpsAgent: AUDIT_HTTPS_AGENT,
+          maxContentLength: 128 * 1024,
+          maxRedirects: 0,
+          validateStatus: () => true,
+          headers: { 'User-Agent': USER_AGENT }
+        });
+        if (diag.matchFn(res)) {
+          exposedDiagnostics.push(diag.path);
+          findings.push({
+            category: 'Exposed Source Maps & Configs',
+            type: `Publicly Exposed Diagnostics Endpoint (${diag.label})`,
+            severity: diag.path.includes('heapdump') || diag.path.includes('env') ? 'CRITICAL' : 'HIGH',
+            owaspRef: 'OWASP-A05',
+            proof: `${diag.method} ${targetOrigin}${diag.path} returned HTTP ${res.status} exposing runtime diagnostic data.`,
+            description:
+              'Unauthenticated Spring Actuator, Prometheus metrics, or Apache server-status routes reveal environment variables, memory objects, internal hostnames, or active user sessions.',
+            remediation:
+              'Disable public exposure of /actuator/*, /metrics, and /server-status in production or restrict access strictly to private VPC/VPN IP allowlists.'
+          });
+        }
+      } catch {}
+    }),
+    ...prioritySubRoutes.map(async (subPath) => {
+      try {
+        const res = await axios.get(`${targetOrigin}${subPath}`, {
+          timeout: 2600,
+          httpsAgent: AUDIT_HTTPS_AGENT,
+          maxContentLength: 256 * 1024,
+          maxRedirects: 2,
+          validateStatus: () => true,
+          headers: sameOriginHeaders(false)
+        });
+        routesAudited++;
+        if (res.status >= 200 && res.status < 300 && isHtmlDocument(typeof res.data === 'string' ? res.data : '', res.headers['content-type'])) {
+          const isAuthRoute = /(?:login|signin|auth|admin|account|dashboard)/i.test(subPath);
+          const xfo = res.headers['x-frame-options'];
+          const csp = String(res.headers['content-security-policy'] || '');
+          const cc = String(res.headers['cache-control'] || '').toLowerCase();
+          if (isAuthRoute && !xfo && !csp.includes('frame-ancestors')) {
+            subRouteHeaderGaps.push(`${subPath} (missing frame protection)`);
+          } else if (isAuthRoute && cc && !cc.includes('no-store') && !cc.includes('private') && !cc.includes('no-cache')) {
+            subRouteHeaderGaps.push(`${subPath} (cacheable auth view: ${cc})`);
+          }
+          if (!stackLeakReported) {
+            const subTrace = detectVerboseStackTrace(res.data);
+            if (subTrace) {
+              stackLeakReported = true;
+              findings.push({
+                category: 'API Surface & Schema Exposure',
+                type: 'Verbose Server Stack Trace Exposed in Response',
+                severity: 'MEDIUM',
+                owaspRef: 'OWASP-A05',
+                proof: `GET ${subPath} leaked error stack trace signature: "${subTrace}"`,
+                description: 'Sub-route error responses disclose internal paths or stack frames.',
+                remediation: 'Handle exceptions globally in production and return sanitized error views.'
+              });
+            }
+          }
+        }
+      } catch {}
+    })
+  ]);
+
+  if (subRouteHeaderGaps.length > 0) {
+    findings.push({
+      category: 'Security Headers & CORS',
+      type: `Sub-Route Security Policy Gap on Sensitive Paths (${subRouteHeaderGaps.length})`,
+      severity: 'LOW',
+      owaspRef: 'OWASP-A05',
+      proof: `Sub-route audit across ${prioritySubRoutes.length} routes flagged: ${subRouteHeaderGaps.slice(0, 3).join(', ')}`,
+      description: 'Sensitive login/account/dashboard routes lack anti-clickjacking headers or private no-store Cache-Control directives.',
+      remediation: 'Apply global security headers (X-Frame-Options, CSP frame-ancestors, Cache-Control: no-store) consistently across every application route.'
+    });
+  }
+
+  // 6. Verified-Domain / Local Dev Safe Active Posture Checks (Strict Domain Ownership Gate)
+  const httpMethods: string[] = [];
+  let xForwardedHostReflected = false;
+  let openRedirectParam: string | null = null;
+  let unescapedReflection = false;
+
+  if (verifiedOrLocal) {
+    const traceProbe = axios({
+      method: 'TRACE',
+      url: targetOrigin,
+      timeout: 2400,
+      httpsAgent: AUDIT_HTTPS_AGENT,
+      maxRedirects: 0,
+      validateStatus: () => true,
+      headers: { 'User-Agent': USER_AGENT, 'X-CMA-Trace': 'cma_trace_probe' }
+    }).catch(() => null);
+
+    const optionsProbe = axios({
+      method: 'OPTIONS',
+      url: targetOrigin,
+      timeout: 2400,
+      httpsAgent: AUDIT_HTTPS_AGENT,
+      maxRedirects: 0,
+      validateStatus: () => true,
+      headers: { 'User-Agent': USER_AGENT }
+    }).catch(() => null);
+
+    const xfhProbe = axios.get(targetOrigin, {
+      timeout: 2600,
+      httpsAgent: AUDIT_HTTPS_AGENT,
+      maxRedirects: 0,
+      maxContentLength: 256 * 1024,
+      validateStatus: () => true,
+      headers: {
+        'User-Agent': USER_AGENT,
+        'X-Forwarded-Host': 'cma-host-probe.invalid'
+      }
+    }).catch(() => null);
+
+    // Safe Open-Redirect check: checks Location header ONLY without following redirects
+    const redirectParams = ['next', 'redirect', 'returnTo'];
+    const redirectProbes = redirectParams.map(async (param) => {
+      try {
+        const probeDest = 'https://cma-redirect-probe.invalid/landing';
+        const res = await axios.get(`${targetOrigin}/?${param}=${encodeURIComponent(probeDest)}`, {
+          timeout: 2200,
+          httpsAgent: AUDIT_HTTPS_AGENT,
+          maxRedirects: 0,
+          validateStatus: () => true,
+          headers: { 'User-Agent': USER_AGENT }
+        });
+        const loc = String(res.headers?.location || '');
+        if (res.status >= 300 && res.status < 400 && loc.toLowerCase().startsWith('https://cma-redirect-probe.invalid')) {
+          return param;
+        }
+      } catch {}
+      return null;
+    });
+
+    // Safe non-executable output-encoding marker check (alphanumeric + double quote, zero HTML tags/scripts)
+    const encodingMarker = 'cma_enc_probe_9482"cma';
+    const encodeProbe = axios.get(`${targetOrigin}/?q=${encodeURIComponent(encodingMarker)}`, {
+      timeout: 2400,
+      httpsAgent: AUDIT_HTTPS_AGENT,
+      maxRedirects: 1,
+      maxContentLength: 256 * 1024,
+      validateStatus: () => true,
+      headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,*/*' }
+    }).catch(() => null);
+
+    const [traceRes, optRes, xfhRes, encRes, ...redirMatches] = await Promise.all([
+      traceProbe,
+      optionsProbe,
+      xfhProbe,
+      encodeProbe,
+      ...redirectProbes
+    ]);
+
+    if (optRes) {
+      const allowHdr = String(optRes.headers?.allow || optRes.headers?.['access-control-allow-methods'] || '');
+      if (allowHdr) {
+        for (const m of allowHdr.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)) {
+          if (!httpMethods.includes(m)) httpMethods.push(m);
+        }
+      }
+    }
+
+    if (
+      traceRes &&
+      traceRes.status === 200 &&
+      (String(traceRes.headers?.['content-type'] || '').includes('message/http') ||
+        (typeof traceRes.data === 'string' && traceRes.data.includes('cma_trace_probe')))
+    ) {
+      if (!httpMethods.includes('TRACE')) httpMethods.push('TRACE');
+      findings.push({
+        category: 'Verified Active DAST Posture',
+        type: 'HTTP TRACE Method Enabled (Cross-Site Tracing Risk)',
+        severity: 'MEDIUM',
+        owaspRef: 'OWASP-A05',
+        proof: `Verified active TRACE request to ${targetOrigin} returned HTTP 200 echoing request headers.`,
+        description: 'Enabling HTTP TRACE lets legacy/proxied requests reflect sensitive headers and authorization cookies back in responses.',
+        remediation: 'Disable the TRACE HTTP method in Nginx, Apache (TraceEnable Off), or your reverse proxy.'
+      });
+    }
+
+    if (xfhRes) {
+      const loc = String(xfhRes.headers?.location || '').toLowerCase();
+      const bodyStr = typeof xfhRes.data === 'string' ? xfhRes.data.slice(0, 80000) : '';
+      if (loc.includes('cma-host-probe.invalid') || bodyStr.toLowerCase().includes('https://cma-host-probe.invalid')) {
+        xForwardedHostReflected = true;
+        findings.push({
+          category: 'Verified Active DAST Posture',
+          type: 'X-Forwarded-Host Header Reflection Detected (Cache / Redirect Poisoning Risk)',
+          severity: 'MEDIUM',
+          owaspRef: 'OWASP-A05',
+          proof: `Verified GET ${targetOrigin} with X-Forwarded-Host: cma-host-probe.invalid echoed the untrusted host in ${
+            loc.includes('cma-host-probe.invalid') ? `Location header (${loc})` : 'rendered HTML/link URLs'
+          }.`,
+          description: 'Blindly trusting untrusted X-Forwarded-Host headers allows attackers to poison CDN caches or manipulate generated password-reset URLs.',
+          remediation: 'Configure your app server to ignore X-Forwarded-Host unless coming from a trusted reverse proxy IP allowlist and enforce an explicit canonical host.'
+        });
+      }
+    }
+
+    const firstRedir = redirMatches.find(Boolean) || null;
+    if (firstRedir) {
+      openRedirectParam = firstRedir;
+      findings.push({
+        category: 'Verified Active DAST Posture',
+        type: `Unvalidated Open Redirect Parameter Detected (?${firstRedir}=)`,
+        severity: 'MEDIUM',
+        owaspRef: 'OWASP-A01',
+        proof: `Verified GET ${targetOrigin}/?${firstRedir}=https://cma-redirect-probe.invalid returned HTTP 3xx redirecting to arbitrary external domain.`,
+        description: 'Unvalidated redirect parameters let phishers hijack your trusted domain URLs to redirect users to deceptive external pages.',
+        remediation: 'Restrict redirect parameters strictly to relative paths ("/dashboard") or an explicit same-origin URL allowlist.'
+      });
+    }
+
+    if (
+      encRes &&
+      encRes.status === 200 &&
+      typeof encRes.data === 'string' &&
+      isHtmlDocument(encRes.data, encRes.headers['content-type']) &&
+      encRes.data.includes('cma_enc_probe_9482"cma')
+    ) {
+      unescapedReflection = true;
+      findings.push({
+        category: 'Verified Active DAST Posture',
+        type: 'Unencoded Query Reflection Detected (?q= Attribute Escape Risk)',
+        severity: 'HIGH',
+        owaspRef: 'OWASP-A03',
+        proof: `Verified non-executable quote marker in ?q= reflected verbatim without &quot; HTML-entity encoding in text/html response.`,
+        description: 'Reflecting raw unencoded characters like quotes into HTML documents indicates missing contextual output encoding, exposing templates to Cross-Site Scripting.',
+        remediation: 'Ensure all query/URL parameters rendered into HTML templates are contextually escaped (&quot;, &lt;, &gt;) and enforce strict Content-Security-Policy.'
+      });
+    }
+
+    if (!xForwardedHostReflected && !openRedirectParam && !unescapedReflection && !findings.some((f) => f.type.includes('TRACE Method'))) {
+      findings.push({
+        category: 'Verified Active DAST Posture',
+        type: 'Verified Active DAST Probes Clean (Redirect, Host Header & Output Encoding)',
+        severity: 'PASS',
+        owaspRef: 'OWASP-A03',
+        proof: `Verified active checks on ${targetOrigin} passed HTTP TRACE, X-Forwarded-Host reflection, ?next/?redirect/?returnTo validation, and ?q= HTML output encoding.`,
+        description: 'Authorized non-destructive active posture checks confirmed proper host validation, redirect sanitization, and HTML output encoding.',
+        remediation: 'Re-run verified active posture checks automatically in CI after major routing or template updates.'
+      });
+    }
+  }
+
   return {
     findings,
     surface: {
@@ -1059,6 +1368,15 @@ export async function runWebDeepAudit(params: {
       jwtAudits,
       robotsDisallowed: robotsDisallowed.slice(0, 15),
       sitemapCount,
+      activeDastChecks: {
+        mode: verifiedOrLocal ? 'verified-active' : 'passive-only',
+        routesAudited,
+        exposedDiagnostics,
+        httpMethods,
+        xForwardedHostReflected,
+        openRedirectParam,
+        unescapedReflection
+      },
       ...(hasAuth
         ? {
             authAudit: {

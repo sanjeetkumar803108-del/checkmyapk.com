@@ -650,6 +650,43 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                 </div>
               </div>
             )}
+
+            {/* Compound Attack Chains Detected (Cross-Finding Correlation) */}
+            {Array.isArray(report.attackChains) && report.attackChains.length > 0 && (
+              <div className="wb-ide-evidence rounded-xl border border-rose-500/25 bg-rose-500/[0.04] p-4 space-y-2.5">
+                <div className="flex items-center justify-between gap-2 border-b border-rose-500/15 pb-2">
+                  <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] font-semibold text-rose-400">
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>Correlated Attack Chains ({report.attackChains.length})</span>
+                  </span>
+                  <span className="font-mono text-[9.5px] text-rose-300/80">
+                    Chained Multi-Flaw Vectors
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {report.attackChains.map((chain: any, idx: number) => (
+                    <div key={idx} className="p-2.5 rounded-lg bg-black/30 border border-white/10 space-y-1 text-xs">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="font-semibold text-white">{chain.title}</span>
+                        <span className="font-mono text-[9.5px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-400 border border-rose-500/30 font-semibold">
+                          {chain.severity}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 leading-relaxed">{chain.summary}</p>
+                      {Array.isArray(chain.components) && chain.components.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-0.5 font-mono text-[9.5px]">
+                          {chain.components.map((comp: string, cIdx: number) => (
+                            <span key={cIdx} className="px-1.5 py-0.5 rounded bg-white/[0.05] text-slate-300 border border-white/10">
+                              {comp}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1153,6 +1190,32 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                           )}
                         </>
                       )}
+                      {report.webDeepSurface.activeDastChecks && (
+                        <span
+                          className={`px-2 py-0.5 rounded border font-semibold ${
+                            report.webDeepSurface.activeDastChecks.mode === 'verified-active'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                              : 'bg-white/[0.04] text-slate-300 border-white/15'
+                          }`}
+                        >
+                          {report.webDeepSurface.activeDastChecks.mode === 'verified-active'
+                            ? 'Verified Active DAST'
+                            : 'Safe Passive Mode'}
+                          {' · '}
+                          {report.webDeepSurface.activeDastChecks.routesAudited} route(s)
+                        </span>
+                      )}
+                      {Array.isArray(report.cloudBuckets) && report.cloudBuckets.length > 0 && (
+                        <span
+                          className={`px-2 py-0.5 rounded border font-semibold ${
+                            report.cloudBuckets.some((b: any) => b.publicListable)
+                              ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                              : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                          }`}
+                        >
+                          {report.cloudBuckets.length} Cloud Bucket(s)
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -1253,10 +1316,10 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                         className="text-[11px] font-medium text-emerald-400 hover:underline inline-flex items-center gap-1.5 cursor-pointer"
                       >
                         <ShieldCheck className="w-3.5 h-3.5" />
-                        <span>Verify Domain Ownership (Unlock 15-Request Rate Burst)</span>
+                        <span>Verify Domain Ownership (Unlock 15-Req Burst &amp; Verified Active DAST)</span>
                       </button>
                       <span className="font-mono text-[10px] text-slate-500">
-                        Unverified public targets run a safe 4-request profile
+                        Unverified public targets run passive probes + 4-req profile
                       </span>
                     </div>
 
@@ -1341,6 +1404,28 @@ export const SecurityReportDashboard: React.FC<SecurityReportDashboardProps> = (
                         <span className="px-2 py-0.5 rounded wb-spec-code">
                           {report.apkMeta.dexBytecodeGraph.methodsAnalyzed.toLocaleString()} Methods · {report.apkMeta.dexBytecodeGraph.instructionsScanned.toLocaleString()} Opcodes
                         </span>
+                        {typeof report.apkMeta.dexBytecodeGraph.hasFlagSecure === 'boolean' && (
+                          <span
+                            className={`px-2 py-0.5 rounded border font-semibold ${
+                              report.apkMeta.dexBytecodeGraph.hasFlagSecure
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                : 'bg-white/[0.04] text-slate-400 border-white/10'
+                            }`}
+                          >
+                            FLAG_SECURE: {report.apkMeta.dexBytecodeGraph.hasFlagSecure ? 'On' : 'Off'}
+                          </span>
+                        )}
+                        {typeof report.apkMeta.inspectedDepsCount === 'number' && report.apkMeta.inspectedDepsCount > 0 && (
+                          <span
+                            className={`px-2 py-0.5 rounded border font-semibold ${
+                              (report.apkMeta.cveCount || 0) > 0
+                                ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                            }`}
+                          >
+                            OSV CVEs: {report.apkMeta.cveCount || 0}/{report.apkMeta.inspectedDepsCount}
+                          </span>
+                        )}
                         <span
                           className={`px-2 py-0.5 rounded border font-semibold ${
                             report.apkMeta.dexBytecodeGraph.taintPaths.length > 0

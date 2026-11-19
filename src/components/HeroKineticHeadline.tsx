@@ -112,7 +112,7 @@ interface HeroRulesCountUpProps {
 }
 
 export const HeroRulesCountUp: React.FC<HeroRulesCountUpProps> = ({
-  target = 45,
+  target = 60,
   startDelayMs = 1580,
   durationMs = 1150,
   introDone,

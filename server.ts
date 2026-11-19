@@ -14,10 +14,13 @@ import { probeRateLimiting } from './server/scanner/rateLimitProbe.ts';
 import { computeSecurityScore } from './server/scanner/scoreCalculator.ts';
 import { runWebDeepAudit } from './server/scanner/webDeepScanner.ts';
 import { runNetworkPostureAudit } from './server/scanner/networkPostureScanner.ts';
+import { auditCloudStorageBuckets } from './server/scanner/cloudStorageAuditor.ts';
+import { extractNpmVersionsFromWebAssets, queryOsvCveDatabase } from './server/scanner/osvCveScanner.ts';
 import {
   generateAiSecuritySummary,
   generateVulnerabilityDeepFix,
-  generateAiMobileAssessment
+  generateAiMobileAssessment,
+  detectCompoundAttackChains
 } from './server/scanner/aiAdvisor.ts';
 import { peekApkPackageName, scanApkBuffer } from './server/scanner/apkScanner.ts';
 import { getPlanPolicy, type PlanPolicy } from './src/data/planPolicy.ts';
@@ -923,8 +926,10 @@ app.post('/api/scan', async (req, res) => {
     }
     log(`Scanning JS bundles for DOM XSS sinks, OpenAPI/Swagger, GraphQL introspection & JWT weaknesses...`);
     log(`Running Dynamic CORS Reflection, SSL/TLS cert, DNS SPF/DMARC & JS Supply-Chain (SRI) posture probes...`);
+    log(`Querying Google OSV.dev CVE database & auditing Cloud Storage (S3/GCS/Azure) bucket ACLs...`);
 
-    const [dbFindings, webDeepResult, networkPostureResult] = await Promise.all([
+    const npmPackages = extractNpmVersionsFromWebAssets(html, keyResult.collectedScripts);
+    const [dbFindings, webDeepResult, networkPostureResult, cloudResult, osvResult] = await Promise.all([
       probeDatabaseSecurity(html, keyResult.collectedScriptContent),
       runWebDeepAudit({
         targetUrl,
@@ -932,14 +937,17 @@ app.post('/api/scan', async (req, res) => {
         initialStatus: initialRes.status,
         collectedScripts: keyResult.collectedScripts,
         authHeader: typeof authHeader === 'string' ? authHeader : undefined,
-        authCookie: typeof authCookie === 'string' ? authCookie : undefined
+        authCookie: typeof authCookie === 'string' ? authCookie : undefined,
+        verifiedOrLocal
       }),
       runNetworkPostureAudit({
         targetUrl,
         html,
         isLoopback: ssrfCheck.isLoopback,
         collectedScripts: keyResult.collectedScripts
-      })
+      }),
+      auditCloudStorageBuckets([html, keyResult.collectedScriptContent], { isProd: IS_PROD }),
+      queryOsvCveDatabase(npmPackages, { isApk: false })
     ]);
 
     const detectedTech = detectTechnologies(`${html}\n${keyResult.collectedScriptContent.slice(0, 120000)}`, headers);
@@ -948,7 +956,7 @@ app.post('/api/scan', async (req, res) => {
       `Deep Web Surface: ${webDeepResult.surface.discoveredRoutes.length} routes, ` +
       `${webDeepResult.surface.apiEndpoints.length} API paths, ` +
       `${webDeepResult.surface.domSinks.length} DOM sinks, ` +
-      `${webDeepResult.surface.jwtAudits.length} JWT(s) audited`
+      `${webDeepResult.surface.jwtAudits.length} JWT(s) · OSV=${osvResult.inspectedDependenciesCount} pkg(s) · Buckets=${cloudResult.probedBuckets.length}`
     );
     log(
       `Network & Supply-Chain Posture: CORS=${networkPostureResult.posture.corsReflection}, ` +
@@ -973,6 +981,14 @@ app.post('/api/scan', async (req, res) => {
     log(`Inspected ${keyResult.totalLinesInspected} lines of code (${(keyResult.totalBytesScanned / 1024).toFixed(1)} KB)`);
     log(`Found ${keyResult.findings.length + artifactFindings.length} leaked secret/artifact alerts, ${headerFindings.filter(h => h.severity !== 'PASS' && h.severity !== 'INFO').length} header flags`);
 
+    // Deduplicate outdated library checks if OSV.dev already matched the exact package name
+    const osvMatchedNames = new Set(osvResult.vulnerableDependencies.map(d => d.packageName.toLowerCase()));
+    const filteredNetworkFindings = networkPostureResult.findings.filter((nf) => {
+      const m = nf.type.match(/^Outdated\s+([a-zA-Z0-9._-]+)\s+Library/i);
+      if (m && osvMatchedNames.has(m[1].toLowerCase())) return false;
+      return true;
+    });
+
     // Aggregate Findings
     const allFindings = [
       ...transportFindings,
@@ -980,17 +996,24 @@ app.post('/api/scan', async (req, res) => {
       ...artifactFindings.map(f => ({ ...f, category: 'Exposed Source Maps & Configs', owaspRef: f.owaspRef || 'OWASP-A05' })),
       ...headerFindings.map(f => ({ ...f, category: 'Security Headers & CORS', owaspRef: f.owaspRef || 'OWASP-A05' })),
       ...dbFindings.map(f => ({ ...f, category: 'Database & Cloud Rules', owaspRef: f.owaspRef || 'OWASP-A01' })),
+      ...cloudResult.findings,
+      ...osvResult.findings,
       ...webDeepResult.findings.map(f => ({ ...f, owaspRef: f.owaspRef || 'OWASP-A05' })),
-      ...networkPostureResult.findings.map(f => ({ ...f, owaspRef: f.owaspRef || 'OWASP-A05' })),
+      ...filteredNetworkFindings.map(f => ({ ...f, owaspRef: f.owaspRef || 'OWASP-A05' })),
       { ...rateLimitFinding, category: 'Rate Limiting & Cost Protection', owaspRef: rateLimitFinding.owaspRef || 'OWASP-API04' }
     ];
+
+    const attackChains = detectCompoundAttackChains(allFindings, false);
+    if (attackChains.length > 0) {
+      log(`Correlated ${attackChains.length} compound attack chain(s) across discovered findings.`);
+    }
 
     // Step 4: Mathematical Scoring
     log(`Computing formal vulnerability deduction score...`);
     const finalReport = computeSecurityScore(targetUrl, allFindings);
 
-    // Step 5: Gemini 3.8 Flash Neural Security Analysis
-    log(`Invoking Gemini 3.8 Flash Neural Engine for custom threat synthesis...`);
+    // Step 5: Gemini Neural Security Analysis
+    log(`Invoking Gemini Neural Engine for compound threat synthesis...`);
     const aiSummary = await generateAiSecuritySummary(
       targetUrl,
       allFindings,
@@ -1008,8 +1031,11 @@ app.post('/api/scan', async (req, res) => {
     // Attach deep telemetry
     const enrichedResponse = {
       ...finalReport,
+      attackChains,
       webDeepSurface: webDeepResult.surface,
       networkPosture: networkPostureResult.posture,
+      cloudBuckets: cloudResult.probedBuckets,
+      cveFindings: osvResult.vulnerableDependencies,
       domainVerification: {
         verified: ownership.verified,
         method: ownership.method || null,
@@ -1074,11 +1100,11 @@ app.post('/api/explain-vulnerability', async (req, res) => {
 
 function validateApkUpload(req: express.Request): { error?: string; buffer?: Buffer; fileName?: string } {
   if (!req.file || !req.file.buffer) {
-    return { error: 'Please select an Android .apk file to upload.' };
+    return { error: 'Please select an Android .apk or .aab file to upload.' };
   }
-  // Verify ZIP/APK local file header magic bytes ('PK' = 0x50 0x4B) before unzipping
+  // Verify ZIP/APK/AAB local file header magic bytes ('PK' = 0x50 0x4B) before unzipping
   if (req.file.buffer.length < 4 || req.file.buffer[0] !== 0x50 || req.file.buffer[1] !== 0x4b) {
-    return { error: 'Invalid APK container: uploaded file is not a valid ZIP/APK archive.' };
+    return { error: 'Invalid Android package: uploaded file is not a valid ZIP/APK/AAB archive.' };
   }
   return {
     buffer: req.file.buffer,
@@ -1243,6 +1269,99 @@ async function runApkAuditPipeline(
     }
   }
 
+  // ── Phase 1 Stage 3+: OSV.dev Maven CVEs, Cloud Buckets & App Links assetlinks.json ──
+  const httpsDeepLinkHosts = Array.from(
+    new Set(
+      (apkScanResult.deepLinkTargets || [])
+        .filter((d) => /^https?$/i.test(d.scheme) && d.host && !d.host.includes('*') && d.host.includes('.'))
+        .map((d) => d.host.toLowerCase())
+        .filter((h) => !h.endsWith('.localhost') && h !== 'example.com' && h !== 'example.org')
+    )
+  ).slice(0, 2);
+
+  const mavenDeps = apkScanResult.mavenDependencies || [];
+  const storageTexts = apkScanResult.extractedStorageText || [];
+  const appCerts = (apkScanResult.signingCertSha256s || []).map((c) => c.toUpperCase());
+
+  if (mavenDeps.length > 0 || storageTexts.length > 0 || httpsDeepLinkHosts.length > 0) {
+    log(
+      `Stage 3+ Supply-Chain & Deep Link Audit: ${mavenDeps.length} Maven deps, ${storageTexts.length} storage URL(s), ${httpsDeepLinkHosts.length} App Link host(s)...`,
+      83
+    );
+  }
+
+  const assetLinkProbe = async (host: string) => {
+    const assetUrl = `https://${host}/.well-known/assetlinks.json`;
+    try {
+      const safety = await validateTargetSafety(assetUrl, { isProd: IS_PROD });
+      if (!safety.allowed) return;
+      const res = await axios.get(assetUrl, {
+        timeout: 2600,
+        httpsAgent: AUDIT_HTTPS_AGENT,
+        maxRedirects: 1,
+        maxContentLength: 128 * 1024,
+        validateStatus: () => true,
+        headers: { 'User-Agent': 'CheckMyAPK-Stage3-Auditor/1.0' }
+      });
+
+      const list = Array.isArray(res.data) ? res.data : null;
+      const pkgMatched = list?.find((entry: any) => entry?.target?.package_name === apkScanResult.packageName);
+      const certList: string[] = Array.isArray(pkgMatched?.target?.sha256_cert_fingerprints)
+        ? pkgMatched.target.sha256_cert_fingerprints.map((s: any) => String(s).toUpperCase())
+        : [];
+      const certMatched = appCerts.length === 0 || appCerts.some((c) => certList.includes(c));
+
+      if (res.status === 200 && pkgMatched && certMatched) {
+        allApkFindings.push({
+          category: 'Manifest & IPC Surface',
+          type: `Android App Links Verified (${host})`,
+          severity: 'PASS',
+          proof: `Verified GET ${assetUrl} returned HTTP 200 matching package "${apkScanResult.packageName}"${
+            appCerts[0] ? ` and signing SHA-256 fingerprint` : ''
+          }.`,
+          description: 'Domain Digital Asset Links properly bind HTTPS deep links exclusively to this verified Android application.',
+          remediation: 'Keep /.well-known/assetlinks.json synchronized with your release Play App Signing certificate.',
+          owaspRef: 'MASVS-PLATFORM-1'
+        });
+      } else {
+        const reason =
+          res.status !== 200
+            ? `returned HTTP ${res.status}`
+            : !pkgMatched
+              ? `omits package_name "${apkScanResult.packageName}"`
+              : 'SHA-256 signing certificate fingerprint mismatch';
+        allApkFindings.push({
+          category: 'Manifest & IPC Surface',
+          type: `Deep Link Hijacking Risk: Missing or Unmatched assetlinks.json (${host})`,
+          severity: 'MEDIUM',
+          proof: `Manifest declares HTTPS App Link host "${host}", but ${assetUrl} ${reason}.`,
+          description:
+            'Without a verified Digital Asset Links manifest binding your package and certificate SHA-256, Android falls back to disambiguation dialogs or allows rival apps to intercept deep link intents.',
+          remediation: `Publish a valid /.well-known/assetlinks.json file at https://${host}/.well-known/assetlinks.json listing "${apkScanResult.packageName}" and your release SHA-256 certificate fingerprint.`,
+          owaspRef: 'MASVS-PLATFORM-1'
+        });
+      }
+    } catch {}
+  };
+
+  const [osvApkResult, cloudApkResult] = await Promise.all([
+    queryOsvCveDatabase(mavenDeps, { isApk: true }),
+    auditCloudStorageBuckets(storageTexts, { isProd: IS_PROD, isApk: true }),
+    ...httpsDeepLinkHosts.map((host) => assetLinkProbe(host))
+  ]);
+
+  for (const ov of osvApkResult.findings) {
+    allApkFindings.push(ov);
+  }
+  for (const cf of cloudApkResult.findings) {
+    allApkFindings.push(cf);
+  }
+
+  const apkAttackChains = detectCompoundAttackChains(allApkFindings, true);
+  if (apkAttackChains.length > 0) {
+    log(`Correlated ${apkAttackChains.length} mobile attack chain(s) across manifest, bytecode & Stage 3 findings.`, 86);
+  }
+
   log(`Found ${allApkFindings.filter(f => f.severity === 'CRITICAL').length} Critical, ${allApkFindings.filter(f => f.severity === 'HIGH').length} High findings — calculating OWASP MASVS score...`, 88);
   const finalReport = computeSecurityScore(apkScanResult.packageName, allApkFindings);
 
@@ -1273,9 +1392,11 @@ async function runApkAuditPipeline(
   return {
     ...finalReport,
     isApkAudit: true,
+    attackChains: apkAttackChains,
     apkMeta: {
       fileName,
       sizeMb,
+      isAppBundle: apkScanResult.isAppBundle,
       sha256: apkScanResult.sha256,
       obfuscationStatus: apkScanResult.obfuscationStatus,
       packageName: apkScanResult.packageName,
@@ -1289,6 +1410,10 @@ async function runApkAuditPipeline(
       dexCount: apkScanResult.dexCount,
       totalFiles: apkScanResult.telemetry.totalFiles,
       exportedComponents: apkScanResult.exportedComponents,
+      deepLinkTargets: apkScanResult.deepLinkTargets || [],
+      cveCount: osvApkResult.vulnerableDependencies.length,
+      inspectedDepsCount: osvApkResult.inspectedDependenciesCount,
+      probedBuckets: cloudApkResult.probedBuckets,
       trackers: apkScanResult.trackers || [],
       sdks: apkScanResult.sdks || [],
       discoveredEndpoints: apkScanResult.discoveredEndpoints || [],

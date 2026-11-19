@@ -36,21 +36,21 @@ interface DetectionRuleItem {
 const APK_ENGINE_RULES: DetectionRuleItem[] = [
   {
     id: 'MASVS-STORAGE-1',
-    title: 'DEX Bytecode Secret Extraction',
+    title: 'DEX Bytecode Secret & Logcat Audit',
     token: 'classes*.dex',
-    detail: 'Hardcoded API keys, Stripe tokens & signing secrets',
+    detail: 'Hardcoded API keys, Log.d credential leaks & Signing SHA-256',
   },
   {
     id: 'MASVS-PLATFORM-1',
-    title: 'Manifest & Exported IPC Audit',
-    token: 'AndroidManifest.xml',
-    detail: 'Unprotected activities, receivers & debuggable flags',
+    title: 'Manifest, AAB & App Link Audit',
+    token: '.apk · .aab · assetlinks',
+    detail: 'Exported IPC, FLAG_SECURE, Biometric CryptoObject & deep link hijack checks',
   },
   {
     id: 'MASVS-CODE-2',
-    title: 'Native ELF Binary Hardening',
-    token: 'lib/*.so',
-    detail: 'NX stack, PIE, Stack Canary & Full RELRO verification',
+    title: 'Native ELF & OSV.dev CVE Audit',
+    token: 'lib/*.so · OSV.dev',
+    detail: 'NX, PIE, Canary, Full RELRO & real-time Maven dependency CVEs',
   },
   {
     id: 'MASVS-NETWORK-1',
@@ -60,42 +60,42 @@ const APK_ENGINE_RULES: DetectionRuleItem[] = [
   },
   {
     id: 'MASVS-AUTH-2',
-    title: 'Cloud Backend & BaaS Probes',
-    token: 'Firebase / Supabase',
-    detail: 'Embedded database URLs & anonymous read exposure',
+    title: 'Cloud Storage & BaaS Live Probes',
+    token: 'S3 · GCS · Firebase',
+    detail: 'Embedded DB rules & public cloud storage bucket ACL verification',
   },
   {
     id: 'MASVS-RESILIENCE-1',
-    title: 'Obfuscation & Tracker Inventory',
-    token: 'R8 / ProGuard',
-    detail: 'Symbol stripping posture & third-party SDK audit',
+    title: 'Integrity, Obfuscation & Trackers',
+    token: 'R8 · Play Integrity',
+    detail: 'Root/tamper detection signals, R8 minification & third-party SDKs',
   },
 ];
 
 const WEB_ENGINE_RULES: DetectionRuleItem[] = [
   {
     id: 'OWASP-A02',
-    title: 'Client Bundle AST & Taint Scan',
-    token: 'JS AST',
-    detail: 'Leaked cloud keys, secrets & untrusted DOM XSS sinks',
+    title: 'Client Bundle AST, Secrets & Cloud ACLs',
+    token: 'JS AST · S3/GCS',
+    detail: 'Leaked cloud keys, public S3/GCS/Azure buckets & DOM XSS sinks',
   },
   {
     id: 'OWASP-A05',
-    title: 'Sensitive Build Artifact Discovery',
-    token: '.env · .git · .map',
-    detail: 'Publicly reachable configs, repo heads & source maps',
+    title: 'Artifacts, Actuator & Sub-Route Crawl',
+    token: '.env · .git · /actuator',
+    detail: 'Exposed configs, heapdumps, Prometheus metrics & source maps',
   },
   {
-    id: 'OWASP-A02-TLS',
-    title: 'Transport, Headers & Cookie Flags',
-    token: 'HSTS · CSP · SRI',
-    detail: 'TLS protocol strength, HttpOnly & SameSite enforcement',
+    id: 'OWASP-A06',
+    title: 'Live OSV.dev CVE & SRI Supply-Chain',
+    token: 'OSV.dev · SRI · TLS',
+    detail: 'Real-time frontend CVE matching, HSTS, CSP & HttpOnly enforcement',
   },
   {
     id: 'OWASP-A01',
-    title: 'CORS Reflection & Email Anti-Spoof',
-    token: 'CORS · SPF · DMARC',
-    detail: 'Live arbitrary Origin reflection & DNS TXT validation',
+    title: 'Verified Active DAST & Origin Security',
+    token: 'CORS · TRACE · Redirect',
+    detail: 'Origin reflection, X-Forwarded-Host, Open Redirect & output encoding',
   },
   {
     id: 'OWASP-A04',
@@ -105,9 +105,9 @@ const WEB_ENGINE_RULES: DetectionRuleItem[] = [
   },
   {
     id: 'OWASP-A07',
-    title: 'Session & Protected Route Audit',
-    token: 'Bearer JWT / Cookie',
-    detail: 'Optional authenticated claim & same-origin access checks',
+    title: 'Session & Compound Chain Triage',
+    token: 'Bearer JWT · AI Chains',
+    detail: 'Authenticated route claims & cross-finding attack path correlation',
   },
 ];
 

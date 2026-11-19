@@ -69,6 +69,138 @@ async function generateWithFastTimeout(
   return null;
 }
 
+export interface CompoundAttackChain {
+  title: string;
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+  summary: string;
+  components: string[];
+}
+
+export function detectCompoundAttackChains(findings: any[], isApk: boolean): CompoundAttackChain[] {
+  const vulns = findings.filter((f) => f && f.severity !== 'PASS' && f.severity !== 'INFO');
+  const titles = vulns.map((f) => String(f.type || '').toLowerCase());
+  const hasAny = (rx: RegExp) => titles.some((t) => rx.test(t));
+  const matchTitles = (rx: RegExp) =>
+    vulns.filter((f) => rx.test(String(f.type || ''))).map((f) => String(f.type)).slice(0, 2);
+
+  const chains: CompoundAttackChain[] = [];
+
+  if (!isApk) {
+    const hasXssVector = hasAny(/dom xss|unsafe dynamic code|unencoded query reflection|postmessage/i);
+    const hasNoCsp = hasAny(/missing content-security-policy/i);
+    const hasClientToken = hasAny(/localstorage|no httponly|hardcoded jwt/i);
+    if (hasXssVector && (hasNoCsp || hasClientToken)) {
+      chains.push({
+        title: 'Client Session Hijack & Account Takeover Chain',
+        severity: 'CRITICAL',
+        components: [
+          ...matchTitles(/dom xss|unsafe dynamic code|unencoded query reflection|postmessage/i),
+          ...matchTitles(/missing content-security-policy|localstorage|no httponly/i),
+        ].slice(0, 3),
+        summary:
+          'Missing Content-Security-Policy or client-readable auth storage combined with unguarded DOM sinks / unencoded reflection allows script injection flaws to steal active user sessions directly.',
+      });
+    }
+
+    const hasCors = hasAny(/cors origin reflection|permissive cors/i);
+    const hasApiOrAuth = hasAny(/unauthenticated api|graphql|openapi|jwt|no active rate limit/i);
+    if (hasCors && hasApiOrAuth) {
+      chains.push({
+        title: 'Cross-Origin API & Data Exfiltration Chain',
+        severity: 'CRITICAL',
+        components: [
+          ...matchTitles(/cors origin reflection|permissive cors/i),
+          ...matchTitles(/unauthenticated api|graphql|openapi|jwt|no active rate limit/i),
+        ].slice(0, 3),
+        summary:
+          'Permissive cross-origin headers paired with exposed API schemas, weak JWT claims, or missing rate limits allow external malicious origins to query backend endpoints with user credentials.',
+      });
+    }
+
+    const hasInfraExpose = hasAny(/\.env|\.git|actuator|publicly listable.*bucket|firebase.*readable|supabase.*exposed/i);
+    const hasSecrets = hasAny(/key|secret|mongodb|private cryptographic/i);
+    if (hasInfraExpose || (hasSecrets && vulns.filter((v) => v.severity === 'CRITICAL').length >= 1)) {
+      if (hasInfraExpose && hasSecrets) {
+        chains.push({
+          title: 'Cloud Storage & Exposed Credential Pivot Chain',
+          severity: 'CRITICAL',
+          components: [
+            ...matchTitles(/\.env|\.git|actuator|publicly listable.*bucket|firebase|supabase/i),
+            ...matchTitles(/key|secret|mongodb/i),
+          ].slice(0, 3),
+          summary:
+            'Exposed environment/storage infrastructure alongside client-accessible credentials enables direct unauthorized access to cloud buckets, databases, or billed third-party APIs.',
+        });
+      }
+    }
+
+    const hasCve = hasAny(/known vulnerable library|outdated .* library/i);
+    const hasNoSri = hasAny(/missing subresource integrity/i);
+    if (hasCve && hasNoSri) {
+      chains.push({
+        title: 'Frontend Supply-Chain Dependency Exposure Chain',
+        severity: 'HIGH',
+        components: [...matchTitles(/known vulnerable library|outdated .* library/i), ...matchTitles(/subresource integrity/i)].slice(0, 3),
+        summary:
+          'Known vulnerable client libraries served alongside unpinned external CDN scripts without Subresource Integrity expand frontend script-tampering risk.',
+      });
+    }
+  } else {
+    const hasNetworkIntercept = hasAny(/cleartext|trustmanager|hostnameverifier|ssl error|ssl \/ tls certificate validation bypass/i);
+    const hasNoPinning = hasAny(/no ssl \/ tls certificate pinning/i);
+    const hasApiSecrets = hasAny(/secret|api key|gemini|token|cleartext http urls/i);
+    if (hasNetworkIntercept && (hasNoPinning || hasApiSecrets)) {
+      chains.push({
+        title: 'Zero-Resistance MitM Traffic & Credential Interception Chain',
+        severity: 'CRITICAL',
+        components: [
+          ...matchTitles(/cleartext|trustmanager|hostnameverifier|ssl error|validation bypass/i),
+          ...matchTitles(/certificate pinning|secret|api key/i),
+        ].slice(0, 3),
+        summary:
+          'Cleartext traffic or disabled certificate verification combined with absent certificate pinning lets on-path Wi-Fi attackers intercept auth headers and API payloads cleanly.',
+      });
+    }
+
+    const hasIpc = hasAny(/exported|deep link hijacking/i);
+    const hasWebViewOrTaint = hasAny(/webview|cross-method|taint|javascript bridge|allowuniversalaccess/i);
+    if (hasIpc && hasWebViewOrTaint) {
+      chains.push({
+        title: 'IPC Intent / Deep-Link Hijack to WebView / Native Sink Chain',
+        severity: 'CRITICAL',
+        components: [...matchTitles(/exported|deep link hijacking/i), ...matchTitles(/webview|cross-method|taint|javascript bridge/i)].slice(0, 3),
+        summary:
+          'Unprotected exported activities/deep links paired with unguarded WebView bridges or Intent taint flows let co-resident malicious apps route untrusted URIs directly into privileged sinks.',
+      });
+    }
+
+    const hasUnobfuscated = hasAny(/obfuscation not detected|debuggable/i);
+    const hasCryptoOrSecret = hasAny(/secret|api key|secretkeyspec|ivparameterspec|weak cipher/i);
+    if (hasUnobfuscated && hasCryptoOrSecret) {
+      chains.push({
+        title: 'Rapid Decompilation Secret & Cipher Key Recovery Chain',
+        severity: 'HIGH',
+        components: [...matchTitles(/obfuscation|debuggable/i), ...matchTitles(/secret|api key|secretkeyspec|weak cipher/i)].slice(0, 3),
+        summary:
+          'Readable release symbols (missing R8/ProGuard) allow attackers using JADX to locate hardcoded secrets, static encryption keys, or weak cipher routines within seconds.',
+      });
+    }
+
+    const hasBackupOrLog = hasAny(/allowbackup|sensitive data logged|biometricprompt.*without cryptoobject/i);
+    if (hasBackupOrLog && vulns.length >= 2 && hasAny(/allowbackup/i) && hasAny(/sensitive data logged|biometricprompt/i)) {
+      chains.push({
+        title: 'Local Device Data Extraction & Auth Bypass Chain',
+        severity: 'HIGH',
+        components: matchTitles(/allowbackup|sensitive data logged|biometricprompt/i).slice(0, 3),
+        summary:
+          'Enabled ADB backups alongside sensitive debug logs or event-only biometric prompts increase local credential exposure on stolen or USB-debugged devices.',
+      });
+    }
+  }
+
+  return chains.slice(0, 3);
+}
+
 function buildDeterministicWebSummary(
   targetUrl: string,
   findings: any[],
@@ -80,6 +212,7 @@ function buildDeterministicWebSummary(
   const topVuln = criticals[0] || highs[0] || vulns[0];
   const stackLabel = meta.detectedTech.length > 0 ? meta.detectedTech.join(', ') : 'Custom Web App';
   const uniqueTopTypes = Array.from(new Set(vulns.map(v => String(v.type)))).slice(0, 3);
+  const chains = detectCompoundAttackChains(findings, false);
 
   if (vulns.length === 0) {
     return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackLabel}) passed all ${findings.length} automated web security probes across ${meta.scriptsCount} JS bundles with zero critical or high exposures.\n2. 🚨 PRIMARY ATTACK VECTOR: Client-side bundle inspection and HTTP header enforcement look hardened; remain vigilant on authenticated server API endpoints.\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: Keep CSP policies strict without 'unsafe-eval', and audit backend API routes individually for IDOR/BOLA authorization.`;
@@ -89,8 +222,11 @@ function buildDeterministicWebSummary(
     Boolean(meta.serverHeader) &&
     stackLabel.toLowerCase().includes(String(meta.serverHeader).toLowerCase());
   const stackSummary = `${stackLabel}${meta.serverHeader && !serverIncluded ? `, ${meta.serverHeader}` : ''}`;
+  const chainText = chains[0]
+    ? `Compound risk — ${chains[0].title}: ${chains[0].summary}`
+    : `Highest priority weakness is "${topVuln.type}" (${topVuln.severity}) — ${topVuln.description}`;
 
-  return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackSummary}) exposed ${vulns.length} security issue(s) (${criticals.length} Critical, ${highs.length} High) across ${meta.scriptsCount} audited JS bundles.\n2. 🚨 PRIMARY ATTACK VECTOR: Highest priority weakness is "${topVuln.type}" (${topVuln.severity}) — ${topVuln.description}\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: (1) Resolve "${topVuln.type}" immediately using the recommended patch; (2) Address top priorities (${uniqueTopTypes.join(', ')}); (3) Re-run CheckMyAPK to confirm score uplift.`;
+  return `1. 🛡️ THREAT LANDSCAPE: ${targetUrl} (${stackSummary}) exposed ${vulns.length} security issue(s) (${criticals.length} Critical, ${highs.length} High) across ${meta.scriptsCount} audited JS bundles.\n2. 🚨 PRIMARY ATTACK VECTOR: ${chainText}\n3. ⚡ 24-HOUR REMEDIATION ROADMAP: (1) Resolve "${topVuln.type}" immediately using the recommended patch; (2) Address top priorities (${uniqueTopTypes.join(', ')}); (3) Re-run CheckMyAPK to confirm score uplift.`;
 }
 
 function buildDeterministicMobileSummary(
@@ -110,11 +246,12 @@ function buildDeterministicMobileSummary(
   },
   findings: any[]
 ): string {
-  const vulns = findings.filter(f => f.severity !== 'PASS');
+  const vulns = findings.filter(f => f.severity !== 'PASS' && f.severity !== 'INFO');
   const topVuln =
     vulns.find(f => f.severity === 'CRITICAL') ||
     vulns.find(f => f.severity === 'HIGH') ||
     vulns[0];
+  const chains = detectCompoundAttackChains(findings, true);
 
   const trackerNote =
     meta.trackers && meta.trackers.length > 0
@@ -125,7 +262,11 @@ function buildDeterministicMobileSummary(
     return `1. 📱 REVERSE-ENGINEERING RESILIENCE: ${meta.packageName} (${meta.frameworkDetected}, Target SDK ${meta.targetSdkVersion || 34}, Obfuscation: ${meta.obfuscationStatus || 'Checked'}) passed all static DEX, Manifest IPC (${meta.exportedTotal || 0} exported), and Stage 3 API (${meta.probedApisCount || 0} endpoints) checks cleanly. ${trackerNote}\n2. 🚨 CRITICAL THREAT EXPOSURE: No high-risk client secret leaks, debuggable flags, or cleartext traffic gaps found.\n3. ⚡ ANDROID STUDIO REMEDIATION ROADMAP: Maintain minifyEnabled true in build.gradle release builds, add OkHttp CertificatePinner for sensitive APIs, and verify Play Console Data Safety matches SDK behavior.`;
   }
 
-  return `1. 📱 REVERSE-ENGINEERING RESILIENCE: Audited ${meta.packageName} (${meta.frameworkDetected}, ${meta.dexCount} DEX / ${meta.fileSizeMb} MB, ${meta.obfuscationStatus || 'Binary Audited'}). Inspected ${meta.exportedTotal || 0} exported IPC components (${meta.unprotectedIpc || 0} unprotected) and ${meta.probedApisCount || 0} live backend endpoints. ${trackerNote}\n2. 🚨 CRITICAL THREAT EXPOSURE: Primary risk is "${topVuln.type}" (${topVuln.severity}) — ${topVuln.description}\n3. ⚡ ANDROID STUDIO REMEDIATION ROADMAP: (1) ${topVuln.remediation} (2) Re-build signed release APK/AAB; (3) Re-upload to CheckMyAPK to verify Stage 3 + DEX resolution.`;
+  const chainText = chains[0]
+    ? `Chained risk — ${chains[0].title}: ${chains[0].summary}`
+    : `Primary risk is "${topVuln.type}" (${topVuln.severity}) — ${topVuln.description}`;
+
+  return `1. 📱 REVERSE-ENGINEERING RESILIENCE: Audited ${meta.packageName} (${meta.frameworkDetected}, ${meta.dexCount} DEX / ${meta.fileSizeMb} MB, ${meta.obfuscationStatus || 'Binary Audited'}). Inspected ${meta.exportedTotal || 0} exported IPC components (${meta.unprotectedIpc || 0} unprotected) and ${meta.probedApisCount || 0} live backend endpoints. ${trackerNote}\n2. 🚨 CRITICAL THREAT EXPOSURE: ${chainText}\n3. ⚡ ANDROID STUDIO REMEDIATION ROADMAP: (1) ${topVuln.remediation} (2) Re-build signed release APK/AAB; (3) Re-upload to CheckMyAPK to verify Stage 3 + DEX resolution.`;
 }
 
 function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: string): {
@@ -141,6 +282,7 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
   const isFirebaseClientKey = t.includes('Firebase Client API Key');
   const isAndroid =
     t.includes('APK') ||
+    t.includes('AAB') ||
     t.includes('debuggable') ||
     t.includes('Cleartext') ||
     t.includes('Backup') ||
@@ -159,7 +301,12 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
     t.includes('Native ELF') ||
     t.includes('Cross-Method') ||
     t.includes('Play Console') ||
-    t.includes('Tapjacking');
+    t.includes('Tapjacking') ||
+    t.includes('FLAG_SECURE') ||
+    t.includes('BiometricPrompt') ||
+    t.includes('Logcat') ||
+    t.includes('Deep Link') ||
+    t.includes('assetlinks.json');
 
   if (isFirebaseClientKey) {
     const isApkTarget = techStack.toLowerCase().includes('android') || techStack.toLowerCase().includes('capacitor');
@@ -242,6 +389,30 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
       language = 'cmake';
       explanation = `• Compiled C/C++ native shared libraries (.so) are missing binary hardening flags (${finding.proof || 'PIE/NX/RELRO/Canary'}).\n• Missing exploit mitigations make memory-corruption bugs easier to weaponize.`;
       code = `set(CMAKE_C_FLAGS "\${CMAKE_C_FLAGS} -fstack-protector-strong -fPIE -D_FORTIFY_SOURCE=2")\nset(CMAKE_CXX_FLAGS "\${CMAKE_CXX_FLAGS} -fstack-protector-strong -fPIE -D_FORTIFY_SOURCE=2")\nset(CMAKE_SHARED_LINKER_FLAGS "\${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,noexecstack -Wl,-z,relro,-z,now")`;
+    } else if (t.includes('FLAG_SECURE')) {
+      filename = 'MainActivity.kt';
+      language = 'kotlin';
+      beforeCode = `override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState) }`;
+      explanation = `• WindowManager.LayoutParams.FLAG_SECURE was not detected in compiled bytecode.\n• Sensitive screens can be screenshotted, screen-recorded, or exposed inside Android Recents task thumbnails.`;
+      code = `override fun onCreate(savedInstanceState: Bundle?) {\n  super.onCreate(savedInstanceState)\n  window.setFlags(\n    WindowManager.LayoutParams.FLAG_SECURE,\n    WindowManager.LayoutParams.FLAG_SECURE\n  )\n}`;
+    } else if (t.includes('BiometricPrompt')) {
+      filename = 'BiometricAuthHelper.kt';
+      language = 'kotlin';
+      beforeCode = `biometricPrompt.authenticate(promptInfo) // Event-only check without CryptoObject`;
+      explanation = `• Event-only BiometricPrompt authentication validates an in-memory callback rather than unlocking an AndroidKeyStore key.\n• Rooted devices can hook authentication callbacks if hardware CryptoObject cryptographic binding is missing.`;
+      code = `val keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")\n// Configure setUserAuthenticationRequired(true) on KeyGenParameterSpec,\n// then unlock a Cipher bound via CryptoObject:\nbiometricPrompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(cipher))`;
+    } else if (t.includes('Logcat')) {
+      filename = 'proguard-rules.pro';
+      language = 'bash';
+      beforeCode = `Log.d("AUTH_DEBUG", "JWT=" + token)`;
+      explanation = `• Sensitive credential or token debug logs remain active inside release Dalvik bytecode.\n• USB debugging or privileged log readers can capture logged session identifiers.`;
+      code = `# Strip all verbose/debug/info Log calls in release R8/ProGuard builds:\n-assumenosideeffects class android.util.Log {\n    public static boolean isLoggable(java.lang.String, int);\n    public static int v(...);\n    public static int d(...);\n    public static int i(...);\n}`;
+    } else if (t.includes('Deep Link') || t.includes('assetlinks.json')) {
+      filename = 'https://yourdomain.com/.well-known/assetlinks.json';
+      language = 'json';
+      beforeCode = `<intent-filter android:autoVerify="true"><data android:scheme="https" android:host="yourdomain.com"/></intent-filter> <!-- without matching /.well-known/assetlinks.json -->`;
+      explanation = `• Declared HTTPS deep link hosts in AndroidManifest.xml failed verification against /.well-known/assetlinks.json.\n• Unverified App Links let rival installed apps intercept deep link URLs and hijack OAuth callbacks or payment returns.`;
+      code = `[\n  {\n    "relation": ["delegate_permission/common.handle_all_urls"],\n    "target": {\n      "namespace": "android_app",\n      "package_name": "com.yourapp.package",\n      "sha256_cert_fingerprints": ["YOUR:RELEASE:SIGNING:CERT:SHA256:HEX"]\n    }\n  }\n]`;
     } else if (t.includes('Secret') || t.includes('resources.arsc')) {
       explanation = `• A sensitive secret (${finding.proof || 'DEX/resources.arsc'}) is embedded inside the compiled APK.\n• Attackers can extract hardcoded strings from APK archives in seconds using JADX-GUI or apktool.`;
     }
@@ -344,6 +515,41 @@ function buildDeterministicDeepFix(finding: any, techStack: string, targetUrl: s
     webFilename = 'server.ts (express-rate-limit)';
     webLang = 'typescript';
     webCode = `import rateLimit from 'express-rate-limit';\napp.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));`;
+  } else if (t.includes('Publicly Listable') && t.includes('Bucket')) {
+    webFilename = 'Cloud Storage Bucket IAM / Public Access Policy';
+    webLang = 'json';
+    webBefore = `"Principal": "*", "Action": "s3:ListBucket" // Public directory listing enabled`;
+    webCode = `{\n  "Version": "2012-10-17",\n  "Statement": [\n    {\n      "Effect": "Deny",\n      "Principal": "*",\n      "Action": "s3:ListBucket",\n      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME",\n      "Condition": { "StringNotEquals": { "aws:PrincipalAccount": "YOUR_ACCOUNT_ID" } }\n    }\n  ]\n}\n// Enable Block Public Access -> BlockPublicAcls & BlockPublicPolicy = true`;
+    verifyCmd = `curl -I "${finding.proof?.match(/https?:\/\/\S+/)?.[0] || targetUrl}"`;
+  } else if (t.includes('Known Vulnerable Library')) {
+    webFilename = 'package.json / build.gradle';
+    webLang = 'json';
+    webCode = `// Upgrade vulnerable dependency flagged by OSV.dev:\n// ${finding.remediation || 'Upgrade package to latest patched version'}\nnpm audit fix && npm audit --production`;
+    verifyCmd = `npm audit --production`;
+  } else if (t.includes('Open Redirect')) {
+    webFilename = 'server/routes/redirect.ts';
+    webLang = 'typescript';
+    webBefore = `return res.redirect(req.query.next); // Blindly accepts external https:// URLs`;
+    webCode = `const ALLOWED_PATHS = /^\\/[a-zA-Z0-9_\\-/?=&%]*$/;\nconst nextUrl = String(req.query.next || '/');\nconst safeDest = ALLOWED_PATHS.test(nextUrl) && !nextUrl.startsWith('//') ? nextUrl : '/';\nreturn res.redirect(safeDest);`;
+  } else if (t.includes('X-Forwarded-Host')) {
+    webFilename = 'nginx.conf / express trust proxy';
+    webLang = 'typescript';
+    webBefore = `const host = req.headers['x-forwarded-host'] || req.headers.host;`;
+    webCode = `// Restrict trusted reverse proxies so external X-Forwarded-Host headers are ignored:\napp.set('trust proxy', 1);\nconst CANONICAL_HOST = 'yourdomain.com';\nconst safeOrigin = \`https://\${CANONICAL_HOST}\`;`;
+  } else if (t.includes('Unencoded Query Reflection')) {
+    webFilename = 'server/views/template.tsx';
+    webLang = 'typescript';
+    webBefore = `res.send(\`<p>Search: \${req.query.q}</p>\`); // Unescaped output`;
+    webCode = `// Encode all dynamic query values before rendering HTML & keep strict CSP:\nconst escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));\nres.send(\`<p>Search: \${escapeHtml(String(req.query.q || ''))}</p>\`);`;
+  } else if (t.includes('TRACE Method')) {
+    webFilename = 'nginx.conf / httpd.conf';
+    webLang = 'bash';
+    webCode = `# Disable HTTP TRACE in Apache:\nTraceEnable Off\n\n# Or block TRACE in Nginx server block:\nif ($request_method = TRACE) { return 405; }`;
+    verifyCmd = `curl -i -X TRACE ${targetUrl}`;
+  } else if (t.includes('Diagnostics Endpoint')) {
+    webFilename = 'application.properties / reverse-proxy.conf';
+    webLang = 'bash';
+    webCode = `# Restrict Spring Actuator & Metrics strictly to internal localhost/VPC management ports:\nmanagement.endpoints.web.exposure.include=health\nmanagement.server.address=127.0.0.1`;
   }
 
   return {
@@ -385,6 +591,7 @@ export async function generateAiSecuritySummary(
     const mediumCount = findings.filter(f => f.severity === 'MEDIUM').length;
     const passedCount = findings.filter(f => f.severity === 'PASS').length;
     const prioritizedFindings = [...findings.filter(f => f.severity !== 'PASS'), ...findings.filter(f => f.severity === 'PASS')].slice(0, 12);
+    const attackChains = detectCompoundAttackChains(findings, false);
 
     const prompt = `You are a Principal Cybersecurity Architect & Penetration Tester conducting a rigorous vulnerability audit on an application.
 Target: ${targetUrl}
@@ -396,14 +603,15 @@ Vulnerability Telemetry:
 - High-Risk Vulnerabilities: ${highCount}
 - Medium-Risk Vulnerabilities: ${mediumCount}
 - Verified Defenses (Passed): ${passedCount}
+${attackChains.length > 0 ? `\nCorrelated Compound Attack Chains Detected:\n${JSON.stringify(attackChains, null, 2)}` : ''}
 
 Findings Details:
 ${JSON.stringify(prioritizedFindings, null, 2)}
 
-Write a deeply specific, highly professional, non-generic Security Posture Assessment (130-160 words).
+Write a deeply specific, highly professional, non-generic Security Posture Assessment (130-165 words).
 Structure your response into 3 crisp sections:
-1. 🛡️ THREAT LANDSCAPE: Direct assessment of ${targetUrl}'s exposure based on the detected stack and findings. Mention specific technologies or files found.
-2. 🚨 PRIMARY ATTACK VECTOR: Explain the exact way an attacker would exploit the weakest link found in this audit.
+1. 🛡️ THREAT LANDSCAPE: Direct assessment of ${targetUrl}'s exposure based on the detected stack and findings. Mention specific technologies, CVEs, buckets, or files found.
+2. 🚨 PRIMARY ATTACK VECTOR: Explain the exact way vulnerabilities chain together (if any compound chain exists above, highlight that attack path!) or how the weakest link exposes the app.
 3. ⚡ 24-HOUR REMEDIATION ROADMAP: Give 2-3 precise engineering tasks the development team must execute immediately.
 
 Avoid generic placeholder phrases. Speak directly to the engineering team of this application.`;
@@ -529,6 +737,7 @@ export async function generateAiMobileAssessment(
     const highCount = findings.filter(f => f.severity === 'HIGH').length;
     const mediumCount = findings.filter(f => f.severity === 'MEDIUM').length;
     const prioritizedFindings = [...findings.filter(f => f.severity !== 'PASS'), ...findings.filter(f => f.severity === 'PASS')].slice(0, 10);
+    const attackChains = detectCompoundAttackChains(findings, true);
 
     const prompt = `You are a Senior Mobile Penetration Tester & Reverse Engineer conducting an OWASP MASVS v2 security audit on an Android APK.
 Target Package: ${meta.packageName}
@@ -547,13 +756,14 @@ Vulnerability Findings:
 - Critical Findings: ${criticalCount}
 - High-Risk Findings: ${highCount}
 - Medium-Risk Findings: ${mediumCount}
+${attackChains.length > 0 ? `\nCorrelated Mobile Attack Chains Detected:\n${JSON.stringify(attackChains, null, 2)}\n` : ''}
 Details:
 ${JSON.stringify(prioritizedFindings, null, 2)}
 
 Write an executive-level Mobile Application Security Posture (140-170 words).
 Structure your response into 3 crisp sections:
-1. 📱 REVERSE-ENGINEERING RESILIENCE: Assess how vulnerable this APK is if an attacker decompiles it using JADX-GUI, Apktool, or attaches Frida. Mention the framework (${meta.frameworkDetected}), obfuscation status, and specific components/trackers found.
-2. 🚨 CRITICAL THREAT EXPOSURE: Explain the exact way an attacker can exploit the worst vulnerability detected (e.g. WebView cleartext, exported component, hardcoded keys, or Stage 3 backend exposure).
+1. 📱 REVERSE-ENGINEERING RESILIENCE: Assess how vulnerable this APK is if an attacker decompiles it using JADX-GUI, Apktool, or attaches Frida. Mention the framework (${meta.frameworkDetected}), obfuscation status, and specific components/trackers/CVEs found.
+2. 🚨 CRITICAL THREAT EXPOSURE: Explain how multiple findings chain together (if any compound chain is listed above) or how an attacker exploits the highest risk detected.
 3. ⚡ ANDROID STUDIO REMEDIATION ROADMAP: Give 2-3 precise code adjustments in AndroidManifest.xml, capacitor.config.json, or build.gradle for the engineering team.
 
 Avoid generic boilerplate phrases. Speak directly to the Android development team.`;

@@ -12,7 +12,7 @@ export interface TaintFlowFinding {
 export interface DexBytecodeFinding {
   category: string;
   type: string;
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO' | 'PASS';
   proof: string;
   description: string;
   remediation: string;
@@ -34,6 +34,11 @@ export interface DexBytecodeGraphSummary {
   durationMs: number;
   interproceduralPathsCount?: number;
   pinningSignals?: string[];
+  hasFlagSecure?: boolean;
+  biometricPresent?: boolean;
+  biometricUsesCrypto?: boolean;
+  antiTamperSignals?: string[];
+  sensitiveDebugLogCount?: number;
   taintPaths: TaintFlowFinding[];
   callGraphHotspots: CallGraphHotspot[];
 }
@@ -350,6 +355,12 @@ export function analyzeDexBytecode(
   const dedupFindingKeys = new Set<string>();
   const methodSummaries = new Map<string, MethodSummary>();
   const pinningSignals = new Set<string>();
+  const antiTamperSignals = new Set<string>();
+  const sensitiveDebugLogs: string[] = [];
+  let hasFlagSecure = false;
+  let biometricPresent = false;
+  let biometricUsesCrypto = false;
+  let biometricWeakMethodSig = '';
 
   const addFinding = (f: DexBytecodeFinding) => {
     const key = `${f.type}::${f.proof.slice(0, 120)}`;
@@ -978,6 +989,63 @@ export function analyzeDexBytecode(
                   });
                 }
               }
+
+              // 11. Screen-Capture Protection (Window.setFlags / addFlags with FLAG_SECURE = 0x2000 / 8192)
+              if (
+                calleeClass === 'Landroid/view/Window;' &&
+                (calleeName === 'setFlags' || calleeName === 'addFlags') &&
+                argRegs.length >= 2
+              ) {
+                const flagArg = getReg(argRegs[1]).numConst;
+                const maskArg = argRegs.length >= 3 ? getReg(argRegs[2]).numConst : null;
+                if ((flagArg !== null && (flagArg & 0x2000) !== 0) || (maskArg !== null && (maskArg & 0x2000) !== 0)) {
+                  hasFlagSecure = true;
+                }
+              }
+
+              // 12. BiometricPrompt CryptoObject Binding Audit (MASVS-AUTH-2)
+              if (
+                (calleeClass === 'Landroidx/biometric/BiometricPrompt;' ||
+                  calleeClass === 'Landroid/hardware/biometrics/BiometricPrompt;') &&
+                calleeName === 'authenticate'
+              ) {
+                biometricPresent = true;
+                const usesCryptoObj =
+                  argRegs.some((r) => String(getReg(r).typeConst || '').includes('CryptoObject')) ||
+                  argRegs.length === 3 ||
+                  argRegs.length >= 5;
+                if (usesCryptoObj) {
+                  biometricUsesCrypto = true;
+                } else if (!biometricWeakMethodSig) {
+                  biometricWeakMethodSig = fullMethodSig;
+                }
+              }
+
+              // 13. Production Sensitive Debug Logging (Log.d / Log.v / Log.i inside app package)
+              if (
+                appPkgPrefix &&
+                classDesc.startsWith(appPkgPrefix) &&
+                calleeClass === 'Landroid/util/Log;' &&
+                (calleeName === 'd' || calleeName === 'v' || calleeName === 'i') &&
+                argRegs.length >= 2 &&
+                sensitiveDebugLogs.length < 5
+              ) {
+                const tagStr = getReg(argRegs[0]).strConst || '';
+                const msgStr = getReg(argRegs[1]).strConst || '';
+                const joinedLog = `${tagStr} ${msgStr}`;
+                if (/\b(?:token|jwt|secret|password|passwd|bearer|auth_?key|api_?key|otp|pin|session_?id|private_?key)\b/i.test(joinedLog)) {
+                  sensitiveDebugLogs.push(`${fullMethodSig} -> Log.${calleeName}("${(msgStr || tagStr).slice(0, 48)}")`);
+                }
+              }
+
+              // 14. Anti-Tampering / Root / Integrity Signals
+              if (calleeClass.startsWith('Lcom/google/android/play/core/integrity/')) {
+                antiTamperSignals.add('Play Integrity API');
+              } else if (calleeClass.startsWith('Lcom/scottyab/rootbeer/')) {
+                antiTamperSignals.add('RootBeer Root Detection');
+              } else if (calleeClass.startsWith('Lcom/google/android/gms/safetynet/')) {
+                antiTamperSignals.add('SafetyNet Attestation');
+              }
             } else {
               lastInvokeResult = null;
             }
@@ -1045,6 +1113,95 @@ export function analyzeDexBytecode(
     }
   }
 
+  // Fast cross-DEX presence scan for runtime resilience markers (hybrid plugins + shielded SDKs)
+  for (const dex of dexFiles) {
+    if (dex.buffer.includes('com/google/android/play/core/integrity')) {
+      antiTamperSignals.add('Play Integrity API');
+    }
+    if (dex.buffer.includes('com/scottyab/rootbeer')) {
+      antiTamperSignals.add('RootBeer Root Detection');
+    }
+    if (dex.buffer.includes('com/guardsquare/dexguard')) {
+      antiTamperSignals.add('DexGuard Anti-Tamper');
+    }
+    if (!hasFlagSecure && (dex.buffer.includes('FLAG_SECURE') || dex.buffer.includes('flutter_windowmanager'))) {
+      hasFlagSecure = true;
+    }
+  }
+
+  if (biometricPresent) {
+    if (!biometricUsesCrypto) {
+      addFinding({
+        category: 'Authentication & Biometrics',
+        type: 'BiometricPrompt Invoked Without CryptoObject Binding',
+        severity: 'MEDIUM',
+        proof: `${biometricWeakMethodSig || 'BiometricPrompt.authenticate()'} authenticates UI events without binding a Keystore CryptoObject.`,
+        description:
+          'Event-bound biometric prompts (without CryptoObject) only check an in-memory boolean callback that can be hooked on rooted devices using instrumentation tools.',
+        remediation:
+          'Bind BiometricPrompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(cipher)) to an AndroidKeyStore key that enforces setUserAuthenticationRequired(true).',
+        owaspRef: 'MASVS-AUTH-2'
+      });
+    } else {
+      addFinding({
+        category: 'Authentication & Biometrics',
+        type: 'BiometricPrompt Bound to Keystore CryptoObject',
+        severity: 'PASS',
+        proof: 'Detected BiometricPrompt.authenticate() call paired with a hardware-backed CryptoObject parameter.',
+        description: 'Cryptographic operations unlock only after verifiable biometric hardware verification.',
+        remediation: 'Keep StrongBiometric (BIOMETRIC_STRONG) authenticator requirements enforced.',
+        owaspRef: 'MASVS-AUTH-2'
+      });
+    }
+  }
+
+  if (sensitiveDebugLogs.length > 0) {
+    addFinding({
+      category: 'Storage & Privacy',
+      type: `Sensitive Data Logged in Release Logcat (${sensitiveDebugLogs.length})`,
+      severity: 'MEDIUM',
+      proof: `Debug Log.d/Log.v/Log.i calls referencing sensitive credential terms in app bytecode: ${sensitiveDebugLogs.slice(0, 3).join(' | ')}`,
+      description: 'Active debug logging referencing tokens, keys, or auth secrets leaks sensitive state to system Logcat buffers readable by debugging bridges or privileged logs.',
+      remediation: 'Strip Log.d/Log.v calls automatically in release builds via ProGuard/R8 "-assumenosideeffects class android.util.Log" rules.',
+      owaspRef: 'MASVS-STORAGE-2'
+    });
+  }
+
+  if (hasFlagSecure) {
+    addFinding({
+      category: 'Manifest & IPC Surface',
+      type: 'Screen-Capture Protection Enabled (FLAG_SECURE)',
+      severity: 'PASS',
+      proof: 'Detected WindowManager.LayoutParams.FLAG_SECURE (0x2000) enforcement in compiled bytecode.',
+      description: 'Sensitive application views disable system screenshots, screen recording, and recent-apps task switcher thumbnails.',
+      remediation: 'Keep FLAG_SECURE enabled on login, OTP, card-entry, and account security screens.',
+      owaspRef: 'MASVS-PLATFORM-1'
+    });
+  } else if (dexFiles.length > 0) {
+    addFinding({
+      category: 'Manifest & IPC Surface',
+      type: 'No FLAG_SECURE Screenshot / App-Switcher Masking Detected',
+      severity: 'INFO',
+      proof: 'No Window.setFlags/addFlags(FLAG_SECURE / 0x2000) call detected across app bytecode.',
+      description: 'Without FLAG_SECURE on sensitive screens (login, banking, OTP, recovery phrases), Android captures window snapshots for Recents previews and allows screen recording.',
+      remediation: 'Call window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE) on screens displaying sensitive credentials or PII.',
+      owaspRef: 'MASVS-PLATFORM-1'
+    });
+  }
+
+  const antiTamperList = Array.from(antiTamperSignals);
+  if (antiTamperList.length > 0) {
+    addFinding({
+      category: 'Binary & Signing Security',
+      type: `Runtime Anti-Tampering / Integrity Signals Detected (${antiTamperList.join(', ')})`,
+      severity: 'PASS',
+      proof: `Found runtime integrity/root-defense markers: ${antiTamperList.join(', ')}.`,
+      description: 'Application embeds active device-integrity attestation or root/tamper detection defenses.',
+      remediation: 'Always verify Play Integrity API verdicts strictly on your backend server rather than locally.',
+      owaspRef: 'MASVS-RESILIENCE-1'
+    });
+  }
+
   // ── Phase 2 & 3: Cross-Method Global Taint Propagation (2-4 Hop Call Chains) ──
   const interproceduralPathsCount = resolveInterproceduralTaint(methodSummaries, taintPaths, addFinding);
 
@@ -1058,6 +1215,11 @@ export function analyzeDexBytecode(
       durationMs: Date.now() - startTime,
       interproceduralPathsCount,
       pinningSignals: Array.from(pinningSignals),
+      hasFlagSecure,
+      biometricPresent,
+      biometricUsesCrypto,
+      antiTamperSignals: antiTamperList,
+      sensitiveDebugLogCount: sensitiveDebugLogs.length,
       taintPaths: taintPaths.slice(0, 20),
       callGraphHotspots: Array.from(hotspotMap.values()).slice(0, 15)
     },

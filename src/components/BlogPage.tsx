@@ -360,7 +360,7 @@ export const BlogPage: React.FC<BlogPageProps> = ({
                 Check if your APK or website has this issue right now
               </h3>
               <p className="text-xs sm:text-sm text-slate-400">
-                Run 45+ deterministic OWASP MASVS &amp; web security rules in 10 seconds with zero server retention.
+                Run 60+ deterministic OWASP MASVS, OSV CVE &amp; web security rules in 10 seconds with zero server retention.
               </p>
             </div>
             <button

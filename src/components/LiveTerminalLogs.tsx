@@ -9,26 +9,26 @@ interface TerminalProps {
 const BRAILLE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const WEB_LOG_MESSAGES = [
-  'Initializing CheckMyAPK automated penetration suite...',
+  'Initializing CheckMyAPK Phase-1 Deep Audit suite...',
   'Resolving target DNS and verifying SSL/TLS certificate chain...',
-  'Extracting HTML DOM tree and discovering JavaScript bundles...',
-  'Mapping robots.txt, sitemap.xml, OpenAPI specs & GraphQL schemas...',
-  'Running deep Regex Secret Hunter & Static DOM XSS Sink Analysis...',
-  'Auditing JWT claims, Content-Security-Policy, HSTS & CORS headers...',
-  'Testing Firebase / Supabase rules & passive API route error leaks...',
-  'Firing burst probe to test Denial-of-Wallet rate limits...',
-  'Synthesizing architectural risk assessment & computing score...',
+  'Crawling HTML DOM tree, multi-route paths & extracting JS bundles...',
+  'Mapping robots.txt, sitemap.xml, OpenAPI, GraphQL & Actuator endpoints...',
+  'Running Regex Secret Hunter, S3/GCS Cloud Bucket ACLs & DOM XSS sinks...',
+  'Querying Google OSV.dev CVE database & JWT/Cookie security claims...',
+  'Auditing HTTP headers, CORS reflection & Verified Active DAST checks...',
+  'Testing Firebase / Supabase ACLs & Denial-of-Wallet rate limits...',
+  'Correlating compound attack chains with Gemini Neural Engine...',
 ];
 
 const APK_LOG_MESSAGES = [
-  'Unpacking Android APK zip archive in secure memory sandbox...',
-  'Parsing AndroidBinaryXML manifest & exported IPC components...',
-  'Auditing android:debuggable, usesCleartextTraffic & allowBackup...',
-  'Deep-scanning classes*.dex bytecode for secrets, weak crypto & SSL bypass...',
-  'Fingerprinting embedded 3rd-party Trackers & telemetry SDKs...',
-  'Extracting hardcoded Backend APIs & Firebase/Supabase endpoints...',
-  'Active Probe: Testing extracted Backend API headers & DB rules...',
-  'Computing OWASP MASVS mobile compliance score & neural brief...',
+  'Unpacking Android APK / AAB container in volatile memory sandbox...',
+  'Parsing Binary/Protobuf AndroidManifest.xml & exported IPC components...',
+  'Auditing debuggable flags, cleartext rules, allowBackup & App Links...',
+  'Disassembling classes*.dex for secrets, BiometricPrompt, FLAG_SECURE & taint flows...',
+  'Fingerprinting native ELF (.so) mitigations, trackers & Maven dependencies...',
+  'Stage 3: Querying Google OSV.dev CVEs & probing Cloud Storage bucket ACLs...',
+  'Active Probe: Verifying extracted APIs, Firebase/Supabase & assetlinks.json...',
+  'Correlating compound mobile attack chains & OWASP MASVS v2 verdict...',
 ];
 
 export const LiveTerminalLogs: React.FC<TerminalProps> = ({ targetUrl, isApkMode = false }) => {

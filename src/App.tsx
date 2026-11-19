@@ -87,11 +87,24 @@ interface SecurityReport {
   };
   findings: any[];
   aiExecutiveSummary?: string;
+  attackChains?: Array<{
+    title: string;
+    severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+    summary: string;
+    components: string[];
+  }>;
+  cloudBuckets?: Array<{
+    provider: string;
+    bucketUrl: string;
+    status: number | string;
+    publicListable: boolean;
+  }>;
   isApkAudit?: boolean;
   isDemoPreview?: boolean;
   apkMeta?: {
     fileName: string;
     sizeMb: string;
+    isAppBundle?: boolean;
     sha256?: string;
     obfuscationStatus?: string;
     packageName: string;
@@ -1458,15 +1471,15 @@ export default function App() {
 
     const steps = [
       'Resolving target DNS & establishing secure TLS socket...',
-      'Crawling HTML document tree and extracting script bundles...',
-      'Mapping robots.txt, sitemap.xml, OpenAPI specs & GraphQL endpoints...',
-      'Scanning JS bundles for leaked secrets & Static DOM XSS sinks...',
-      'Auditing JWT claims, HTTP Security Headers & CORS origin policies...',
-      'Testing Firebase / Supabase rules & passive API route error leaks...',
+      'Crawling HTML tree, multi-route paths & extracting JS bundles...',
+      'Mapping robots.txt, sitemap.xml, OpenAPI, GraphQL & Actuator diagnostics...',
+      'Scanning JS bundles for leaked secrets, Cloud buckets & DOM XSS sinks...',
+      'Querying Google OSV.dev CVE database & JWT/Cookie security claims...',
+      'Testing Firebase / Supabase ACLs, CORS origin & Verified DAST posture...',
       effectivePolicy.features.burst15Req
         ? 'Sending 15-request burst to test Denial-of-Wallet rate limits...'
         : 'Running safe 4-request rate-limit probe (Starter tier)...',
-      'Invoking Gemini Neural Engine for custom architectural threat synthesis...'
+      'Correlating compound attack chains with Gemini Neural Engine...'
     ];
 
     let stepIdx = 0;
@@ -1522,11 +1535,11 @@ export default function App() {
     }
   };
 
-  // 📱 Scan APK File Upload (Async Worker Queue + Live Telemetry Polling)
+  // 📱 Scan APK / AAB File Upload (Async Worker Queue + Live Telemetry Polling)
   const handleScanApk = async (fileToScan?: File, authUserOverride?: UserAccount | null) => {
     const selectedFile = fileToScan || apkFile;
     if (!selectedFile) {
-      setError('Please select or drop an Android .apk file to begin.');
+      setError('Please select or drop an Android .apk or .aab file to begin.');
       return;
     }
 
@@ -1655,14 +1668,15 @@ export default function App() {
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const file = e.dataTransfer.files[0];
-      if (file.name.endsWith('.apk')) {
+      const lowerName = file.name.toLowerCase();
+      if (lowerName.endsWith('.apk') || lowerName.endsWith('.aab')) {
         setApkFile(file);
         setError(null);
         if (!currentUser) {
           promptSignInForScan({ mode: 'apk', file });
         }
       } else {
-        setError('Please upload a valid Android package file (.apk).');
+        setError('Please upload a valid Android package file (.apk or .aab).');
       }
     }
   };
@@ -2083,7 +2097,7 @@ export default function App() {
                 >
                   <div>
                     <div className="font-mono text-base sm:text-lg font-semibold text-white">
-                      <HeroRulesCountUp target={45} startDelayMs={1580} durationMs={1150} introDone={heroIntroDone} />
+                      <HeroRulesCountUp target={60} startDelayMs={1580} durationMs={1150} introDone={heroIntroDone} />
                     </div>
                     <div className="text-[11px] text-slate-400 mt-0.5">Security rules</div>
                   </div>
@@ -2284,13 +2298,13 @@ export default function App() {
                       </div>
                     ) : (
                       <>
-                        {/* APK MODE */}
+                        {/* APK / AAB MODE */}
                         {scanMode === 'apk' && (
                           <div className="space-y-3.5">
                             <input
                               type="file"
                               ref={fileInputRef}
-                              accept=".apk"
+                              accept=".apk,.aab"
                               className="hidden"
                               onChange={(e) => {
                                 if (e.target.files && e.target.files[0]) {
@@ -2404,7 +2418,7 @@ export default function App() {
 
                                 <div className="space-y-1.5">
                                   <div className="font-display font-bold text-lg sm:text-[22px] tracking-[-0.025em] text-white">
-                                    Drop your Android .apk file here
+                                    Drop your Android .apk or .aab file here
                                   </div>
                                   <div className="text-xs sm:text-[13px] text-slate-400">
                                     or <span className="wb-accent-ink font-semibold">browse files</span> · Max {activePlanPolicy.maxApkMb}MB ({activePlanPolicy.name})
